@@ -112,6 +112,25 @@ export const PLATE_HALF_WIDTH = 0.216;
 export const ZONE_BOTTOM = 0.473;
 export const ZONE_TOP = 0.936;
 
+// ---------------------------------------------------------------------------
+// targets 【調整可】 — docs/REFERENCE-HB2.md 5-2, 9-A3
+//
+// Distance alone stops being interesting once you can reach the fence at will.
+// The reference titles all answer that the same way: put objects in the air and
+// pay for hitting them, which is the only thing that makes the spray angle
+// something the player AIMS rather than something the player is TOLD afterwards.
+// ---------------------------------------------------------------------------
+
+/** Foul poles stand on the fence line and run from the fence top to here [m]. */
+export const POLE_TOP = 14.0;
+export const POLE_RADIUS = 0.36;
+
+/** Scoreboard slab beyond centre field [m]. */
+export const SCOREBOARD_Z = 133.0;
+export const SCOREBOARD_HALF_WIDTH = 15.0;
+export const SCOREBOARD_BOTTOM = 9.0;
+export const SCOREBOARD_TOP = 22.0;
+
 /** Home plate to the pitcher's rubber [m], and mound height [m]. */
 export const MOUND_DISTANCE = 18.44;
 export const MOUND_HEIGHT = 0.254;
@@ -232,6 +251,23 @@ export const PLAYERS: Readonly<Record<PlayerId, PlayerSpec>> = {
 };
 
 export const PLAYER_IDS: readonly PlayerId[] = ['yuki', 'takaya', 'atsushi'];
+
+/** Character notes for the select screen, quoted from PROMPT.md 0-5. */
+export const PLAYER_FLAVOUR: Readonly<Record<PlayerId, string>> = {
+  yuki: '穏やかで情熱的。人の話を丁寧に聞き、その人らしさを大切にするリーダー',
+  takaya: '誠実で責任感が強い。細かな気配りができ、チームをまとめる頼れる存在',
+  atsushi: '明るく前向きで、話しやすい雰囲気。一緒に将来のプランを考えるのが得意',
+};
+
+export const SKILL_NAME: Readonly<Record<SkillId, string>> = {
+  passion: '情熱の一振り', tenacity: '粘り', aimHigh: '上を狙う',
+};
+
+export const SKILL_NOTE: Readonly<Record<SkillId, string>> = {
+  passion: 'ジャストミートで初速+10%。2連続空振りの次はカーソルが広がる',
+  tenacity: 'ファウルは1ラウンド3回までアウトにならない',
+  aimHigh: 'カーソルの高さが打ち出し角に与える影響が1.5倍',
+};
 
 // ---------------------------------------------------------------------------
 // skills 【調整可】 — the primary balancing dials, PROMPT.md 0-4

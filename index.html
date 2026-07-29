@@ -2,48 +2,142 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BASKET HOME RUN DERBY — M2</title>
+<!-- viewport-fit=cover lets the canvas run under the notch; the safe-area
+     insets below tell the HUD where not to put anything important. -->
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05080f">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="BASKET HOME RUN DERBY — 縦画面のホームラン競争">
+<title>BASKET HOME RUN DERBY</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icon/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="assets/icon/icon-192.png">
+
+<!-- iOS standalone: no Safari chrome once added to the home screen -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HR DERBY">
+
 <style>
   * { box-sizing: border-box; }
+
   html, body {
-    margin: 0; height: 100%;
-    background: #0d1017; color: #dfe6f2;
-    font: 14px/1.6 "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #05080f;
+    color: #dfe6f2;
+    font: 14px/1.5 "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+
+    /* An app, not a document: no scrolling, no rubber banding, no pinch zoom,
+       no long-press callout, no double-tap magnifier, no blue tap flash. */
+    overscroll-behavior: none;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    position: fixed;
+    inset: 0;
   }
-  body { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; }
-  h1 { font-size: 16px; margin: 0; letter-spacing: .04em; color: #9fb2cc; font-weight: 600; }
-  h1 b { color: #ffd76a; }
+
+  /* The canvas is the whole app. Logical size is set in JS; CSS just makes it
+     fill the window at whatever the device's real aspect ratio is. */
   #game {
-    width: min(100%, 1280px); aspect-ratio: 16 / 9;
-    background: #10141c; border-radius: 10px; display: block;
-    cursor: crosshair; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #05080f;
+    touch-action: none;
   }
-  .keys { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center;
-          color: #8ea2bd; font-size: 13px; }
-  .keys span { white-space: nowrap; }
-  kbd {
-    background: #1c2230; border: 1px solid #2c3548; border-bottom-width: 2px;
-    border-radius: 4px; padding: 1px 6px; font: inherit; font-size: 12px; color: #cfe0f5;
+
+  /* Probe element: reading env() back out of a custom property is unreliable
+     across engines, but reading a real computed padding is not. */
+  #safe {
+    position: fixed;
+    top: 0; left: 0;
+    width: 0; height: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    pointer-events: none;
+    visibility: hidden;
   }
-  .note { max-width: 1280px; color: #7c8ba3; font-size: 12.5px; }
+
+  /* Landscape is not supported: the whole composition is built for portrait.
+     Rather than squash it, ask for the phone to be turned. */
+  #rotate {
+    position: fixed;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: #05080f;
+    text-align: center;
+    padding: 24px;
+    z-index: 10;
+  }
+  #rotate .glyph { font-size: 54px; animation: tip 2.4s ease-in-out infinite; }
+  #rotate p { margin: 0; color: #9fb2cc; font-size: 15px; }
+  #rotate b { color: #ffd76a; display: block; font-size: 19px; margin-bottom: 6px; }
+  @keyframes tip {
+    0%, 40%, 100% { transform: rotate(0deg); }
+    60%, 90% { transform: rotate(-90deg); }
+  }
+
+  /* Only shown in a desktop browser, where the phone framing needs explaining. */
+  #hint {
+    position: fixed;
+    left: 50%;
+    top: 4px;
+    transform: translateX(-50%);
+    margin: 0;
+    color: #55627a;
+    font-size: 12px;
+    pointer-events: none;
+    display: none;
+    white-space: nowrap;
+  }
+
+  @media (orientation: landscape) and (max-height: 560px) {
+    #rotate { display: flex; }
+  }
 </style>
 </head>
 <body>
-  <h1>BASKET HOME RUN DERBY <b>— M2: 1球打てる（素朴な描画）</b></h1>
+  <div id="safe"></div>
   <canvas id="game"></canvas>
-  <div class="keys">
-    <span><kbd>Enter</kbd> / <kbd>右クリック</kbd> 投球</span>
-    <span><kbd>クリック</kbd> / <kbd>Space</kbd> スイング</span>
-    <span><kbd>マウス</kbd> / <kbd>WASD</kbd> ミートカーソル</span>
-    <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 選手変更（勇樹 / 貴也 / 敦司）</span>
+
+  <div id="rotate">
+    <div class="glyph">📱</div>
+    <p><b>縦向きにしてください</b>この試合は縦画面専用です</p>
   </div>
-  <p class="note">
-    M2 の目的は「手触りの判定」だけです。スタジアム・投手・観客はすべて仮の描画で、
-    ラウンド進行もスコアもまだありません（M3 以降）。
-    画面下のバーは、いまスイングするとタイミング誤差がどこに落ちるかを示します。
-    黄色がジャストミート域、水色が当たる範囲です。
-  </p>
+
+  <p id="hint">ドラッグ：カーソル ／ クリック：スイング ／ 1 2 3：選手 ／ R：やり直し ／ M：消音</p>
+
+  <script>
+    // Desktop gets the key hints; a phone does not need them.
+    if (!('ontouchstart' in window) && window.innerWidth > 720) {
+      var hint = document.getElementById('hint');
+      if (hint) hint.style.display = 'block';
+    }
+    // Registering the worker is what makes the game installable and offline-capable.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        // updateViaCache:'none' stops the browser from serving sw.js itself out
+        // of the HTTP cache, which is how a worker gets stuck for a whole day.
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+          .then(function (reg) { reg.update(); })
+          .catch(function () { /* plain http dev server */ });
+      });
+    }
+  </script>
   <script type="module" src="dist/src/main.js"></script>
 </body>
 </html>

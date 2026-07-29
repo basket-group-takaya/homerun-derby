@@ -1,0 +1,213 @@
+/**
+ * Round rules and scoring. Pure (PROMPT.md 2).
+ *
+ * The base rules are PROMPT.md 0-1: ten outs, anything that is not a home run
+ * is an out, score = (100 + metres past 120 * K_DIST) * combo. Research
+ * (docs/REFERENCE-HB2.md 4) found that this is the reference genre's "Classic"
+ * mode almost exactly, so it is kept unchanged and the reference's extras are
+ * layered on top rather than replacing it:
+ *
+ *   - bonus pitches worth x2 / x3 (REFERENCE-HB2 5-2)
+ *   - flat bonuses for hitting the foul poles or the scoreboard (5-2)
+ *   - an ARCADE mode where balls that stay in the park still score (4)
+ *
+ * None of these touch the batted-ball model. A x3 pitch flies exactly like a x1
+ * pitch — the multiplier is applied to the score afterwards, so PROMPT.md 5's
+ * "no fudging outcomes with randomness" still holds.
+ */
+
+import type { FieldResult, TargetId } from './stadium.js';
+import type { Contact } from './bat.js';
+import {
+  COMBO_MAX, COMBO_STEP, K_DIST, OUTS_PER_ROUND, SCORE_BASE, SCORE_DISTANCE_REF,
+  TENACITY_FREE_FOULS, TITANIC_DISTANCE,
+} from './constants.js';
+
+export type RoundMode = 'classic' | 'arcade';
+
+/** Presentation grade for one swing. docs/REFERENCE-HB2.md 9-A1. */
+export type Grade = 'perfect' | 'great' | 'good' | 'weak' | 'miss';
+
+export const GRADE_LABEL: Readonly<Record<Grade, string>> = {
+  perfect: 'PERFECT', great: 'GREAT', good: 'GOOD', weak: 'WEAK', miss: 'MISS',
+};
+
+/** Points for clipping a target. 【調整可】 */
+export const TARGET_BONUS: Readonly<Record<TargetId, number>> = {
+  leftPole: 500, rightPole: 500, scoreboard: 300,
+};
+
+export const TARGET_LABEL: Readonly<Record<TargetId, string>> = {
+  leftPole: 'ポール直撃！', rightPole: 'ポール直撃！', scoreboard: '看板直撃！',
+};
+
+export type Round = {
+  readonly mode: RoundMode;
+  readonly outs: number;
+  readonly score: number;
+  readonly homeRuns: number;
+  /** Consecutive home runs; drives the combo multiplier. */
+  readonly streak: number;
+  readonly longest: number;
+  /** takaya's 粘り: fouls left this round that do not cost an out. */
+  readonly freeFouls: number;
+  readonly swings: number;
+  readonly over: boolean;
+};
+
+export type SwingOutcome =
+  | 'homeRun' | 'offTheWall' | 'inPlay' | 'foul' | 'whiff' | 'take';
+
+/** What one swing did, in the terms the HUD and the effects need. */
+export type RoundEvent = {
+  readonly outcome: SwingOutcome;
+  readonly grade: Grade;
+  readonly gained: number;
+  readonly out: boolean;
+  /** True when 粘り absorbed a foul instead of an out. */
+  readonly savedByTenacity: boolean;
+  readonly distance: number;
+  readonly target: TargetId | null;
+  readonly multiplier: number;
+  readonly comboMultiplier: number;
+  readonly titanic: boolean;
+};
+
+export const newRound = (mode: RoundMode, tenacity: boolean): Round => ({
+  mode,
+  outs: 0,
+  score: 0,
+  homeRuns: 0,
+  streak: 0,
+  longest: 0,
+  freeFouls: tenacity ? TENACITY_FREE_FOULS : 0,
+  swings: 0,
+  over: false,
+});
+
+/**
+ * Combo multiplier for the Nth consecutive home run.
+ *
+ * PROMPT.md 0-1: nothing on the first, x1.1 on the second, +0.1 after, capped.
+ * `streak` here is the count BEFORE this home run is added.
+ */
+export const comboMultiplier = (streak: number): number =>
+  streak <= 0 ? 1 : Math.min(COMBO_MAX, 1 + COMBO_STEP * streak);
+
+/**
+ * How well the bat met the ball, for display only.
+ *
+ * Deliberately derived from contact quality rather than from the distance: a
+ * perfectly struck ball into a headwind is still a perfect swing, and telling
+ * the player otherwise would break the causal chain PROMPT.md 5 insists on.
+ */
+export const gradeOf = (contact: Contact): Grade => {
+  switch (contact.kind) {
+    case 'whiff': return 'miss';
+    case 'just': return contact.quality >= 0.86 ? 'perfect' : 'great';
+    case 'good': return 'good';
+    case 'foul': return 'weak';
+    default: return contact.quality >= 0.45 ? 'good' : 'weak';
+  }
+};
+
+const homeRunPoints = (distance: number): number =>
+  SCORE_BASE + Math.max(0, distance - SCORE_DISTANCE_REF) * K_DIST;
+
+/** ARCADE pays for contact that stays in the park; CLASSIC pays nothing. */
+const inPlayPoints = (mode: RoundMode, distance: number): number =>
+  mode === 'arcade' ? Math.round(distance * 0.8) : 0;
+
+/**
+ * Fold one swing into the round.
+ *
+ * `multiplier` is the bonus-pitch factor (1, 2 or 3) and is applied to the
+ * points from this swing only.
+ */
+export const applySwing = (
+  round: Round,
+  input: {
+    readonly contact: Contact;
+    readonly field: FieldResult | null;
+    readonly multiplier: number;
+  },
+): { readonly round: Round; readonly event: RoundEvent } => {
+  const grade = gradeOf(input.contact);
+  const field = input.field;
+  const distance = field?.distance ?? 0;
+  const target = field?.target ?? null;
+
+  const outcome: SwingOutcome = input.contact.kind === 'whiff'
+    ? 'whiff'
+    : field === null ? 'whiff' : field.outcome;
+
+  const isHomeRun = outcome === 'homeRun';
+  const combo = comboMultiplier(round.streak);
+
+  let gained = 0;
+  if (isHomeRun) {
+    gained = Math.round(
+      (homeRunPoints(distance) * combo + (target ? TARGET_BONUS[target] : 0)) * input.multiplier);
+  } else if (outcome === 'offTheWall' || outcome === 'inPlay') {
+    gained = Math.round(inPlayPoints(round.mode, distance) * input.multiplier);
+  } else if (target) {
+    // a foul that still rang the scoreboard: pay it, do not credit a home run
+    gained = Math.round(TARGET_BONUS[target] * 0.4 * input.multiplier);
+  }
+
+  // 粘り absorbs fouls only, and only while charges remain
+  const foulSaved = outcome === 'foul' && round.freeFouls > 0;
+  const costsOut = !isHomeRun && !foulSaved;
+
+  const outs = round.outs + (costsOut ? 1 : 0);
+
+  return {
+    round: {
+      ...round,
+      outs,
+      score: round.score + gained,
+      homeRuns: round.homeRuns + (isHomeRun ? 1 : 0),
+      streak: isHomeRun ? round.streak + 1 : 0,
+      longest: Math.max(round.longest, isHomeRun ? distance : 0),
+      freeFouls: round.freeFouls - (foulSaved ? 1 : 0),
+      swings: round.swings + 1,
+      over: outs >= OUTS_PER_ROUND,
+    },
+    event: {
+      outcome,
+      grade,
+      gained,
+      out: costsOut,
+      savedByTenacity: foulSaved,
+      distance,
+      target,
+      multiplier: input.multiplier,
+      comboMultiplier: isHomeRun ? combo : 1,
+      titanic: isHomeRun && distance >= TITANIC_DISTANCE,
+    },
+  };
+};
+
+/** A pitch let go by: a strike is an out, a ball is nothing. */
+export const applyTake = (
+  round: Round, strike: boolean,
+): { readonly round: Round; readonly event: RoundEvent } => {
+  const outs = round.outs + (strike ? 1 : 0);
+  return {
+    round: strike
+      ? { ...round, outs, streak: 0, over: outs >= OUTS_PER_ROUND }
+      : round,
+    event: {
+      outcome: 'take',
+      grade: 'miss',
+      gained: 0,
+      out: strike,
+      savedByTenacity: false,
+      distance: 0,
+      target: null,
+      multiplier: 1,
+      comboMultiplier: 1,
+      titanic: false,
+    },
+  };
+};

@@ -64,6 +64,15 @@ export type Pitch = {
   /** Where it was aimed on the zone plane [m]. */
   readonly target: { readonly x: number; readonly y: number };
   readonly intendedStrike: boolean;
+  /**
+   * Score multiplier carried by this pitch: 1, 2 or 3.
+   *
+   * docs/REFERENCE-HB2.md 5-2. It changes nothing about the flight — a x3 ball
+   * is aerodynamically an ordinary ball — so PROMPT.md 5's ban on fudging
+   * outcomes with randomness is untouched. All it does is give the player a
+   * reason to care which pitch they take a cut at.
+   */
+  readonly multiplier: 1 | 2 | 3;
 };
 
 export type PitchSample = { readonly pos: Vec3; readonly t: number };
@@ -103,6 +112,7 @@ export const makePitch = (
   type: PitchType,
   target: { readonly x: number; readonly y: number },
   intendedStrike: boolean,
+  multiplier: 1 | 2 | 3 = 1,
 ): Pitch => {
   const spec = PITCHES[type];
   const speed = spec.kmh / 3.6;
@@ -117,7 +127,7 @@ export const makePitch = (
       aim.x - RELEASE_POINT.x, aim.y - RELEASE_POINT.y, -RELEASE_POINT.z));
     velocity = scale(dir, speed);
     const flight = flyPitch({
-      type, release: RELEASE_POINT, velocity, spin, target, intendedStrike,
+      type, release: RELEASE_POINT, velocity, spin, target, intendedStrike, multiplier,
     }, cd);
     aim = {
       x: aim.x + (target.x - flight.crossPoint.x),
@@ -125,7 +135,7 @@ export const makePitch = (
     };
   }
 
-  return { type, release: RELEASE_POINT, velocity, spin, target, intendedStrike };
+  return { type, release: RELEASE_POINT, velocity, spin, target, intendedStrike, multiplier };
 };
 
 /** Integrate a pitch from release until it has passed the plate. */
@@ -170,6 +180,10 @@ export const flyPitch = (pitch: Pitch, cdOverride?: number): PitchFlight => {
   return { samples, crossTime, crossPoint };
 };
 
+/** How often the pitcher offers a x2 or a x3 ball. 【調整可】 */
+export const BONUS_X2_RATE = 0.14;
+export const BONUS_X3_RATE = 0.05;
+
 /** Pick a pitch. Strike 80% of the time, per docs/SPEC.md 5. */
 export const choosePitch = (rng: Rng): { rng: Rng; pitch: Pitch } => {
   const a = pick(rng, PITCH_TYPES);
@@ -184,8 +198,13 @@ export const choosePitch = (rng: Rng): { rng: Rng; pitch: Pitch } => {
     ? nextRange(xr.rng, ZONE_BOTTOM + 0.05, ZONE_TOP - 0.05)
     : nextRange(xr.rng, ZONE_BOTTOM - 0.22, ZONE_TOP + 0.22);
 
+  const roll = nextRange(yr.rng, 0, 1);
+  const multiplier: 1 | 2 | 3 = roll.value < BONUS_X3_RATE
+    ? 3
+    : roll.value < BONUS_X3_RATE + BONUS_X2_RATE ? 2 : 1;
+
   return {
-    rng: yr.rng,
-    pitch: makePitch(a.value, { x: xr.value, y: yr.value }, strike),
+    rng: roll.rng,
+    pitch: makePitch(a.value, { x: xr.value, y: yr.value }, strike, multiplier),
   };
 };

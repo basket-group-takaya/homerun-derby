@@ -1,210 +1,324 @@
 /**
- * M2 rendering: deliberately plain. Enough of the world to judge whether the
- * timing and cursor mechanic feels good, which is the only thing M2 is for.
- * The real presentation is M4.
+ * Scene composition: what gets drawn, in what order, for each of the three
+ * camera beats.
+ *
+ * docs/REFERENCE-HB2.md 10 (★要判断7, option c) settled the shot list:
+ *   'pitch'  — behind the plate. Zone face-on and centred, ball grows at you.
+ *   'swing'  — a 0.30 s cut to the side view, where the five swing sprites live.
+ *   'flight' — follow the ball.
+ * The batter is drawn differently in each: from behind in screen space during
+ * the pitch (the sprite is scenery there, not information), from the five swing
+ * frames in world space during the cut, and not at all in flight.
+ *
+ * Reads state, never writes it (PROMPT.md 2).
  */
 
 import type { Vec3 } from '../core/vec.js';
-import { vec, radians } from '../core/vec.js';
+import { vec } from '../core/vec.js';
 import type { GameState } from '../core/game.js';
 import { ballAt, battedBallAt, currentCatchRadius } from '../core/game.js';
 import type { Projector, Viewport } from './camera.js';
-import { PITCH_LABEL } from '../core/pitch.js';
+import type { StadiumFlags } from './stadium.js';
+import { drawStadium, drawPitcher } from './stadium.js';
 import {
-  BALL_RADIUS, FENCE_HEIGHT, FOUL_ANGLE, MOUND_DISTANCE, PLATE_HALF_WIDTH,
-  PLAYERS, ZONE_BOTTOM, ZONE_TOP, T_MISS, T_JUST,
+  BALL_RADIUS, PLATE_HALF_WIDTH, ZONE_BOTTOM, ZONE_TOP,
 } from '../core/constants.js';
-import { fenceDistance } from '../core/stadium.js';
 
 export type Sprites = Partial<Record<string, HTMLImageElement>>;
 
-const SKY_TOP = '#1d3f6b';
-const SKY_LOW = '#5b86b8';
-const GRASS = '#2f6b34';
-const GRASS_DARK = '#285c2d';
-const DIRT = '#8a6446';
+export type ViewMode = 'pitch' | 'swing' | 'flight';
 
-const poly = (
-  ctx: CanvasRenderingContext2D, p: Projector, pts: readonly Vec3[],
-): boolean => {
-  ctx.beginPath();
-  let started = false;
-  for (const v of pts) {
-    const s = p.project(v);
-    if (!s) return false;
-    if (started) ctx.lineTo(s.x, s.y);
-    else { ctx.moveTo(s.x, s.y); started = true; }
-  }
-  return started;
+export type Presentation = {
+  readonly mode: ViewMode;
+  /** Seconds since the bat met the ball; null when no swing is in flight. */
+  readonly sinceContact: number | null;
+  /** 0..1 windup progress for the pitcher silhouette. */
+  readonly windup: number;
+  /** 0..1, how far through the bat's arc we are during a swing. */
+  readonly swingArc: number;
+  readonly stadium: StadiumFlags;
+  /** Set while the player is on a home-run streak. docs/REFERENCE-HB2.md 9-B5. */
+  readonly hot: number;
 };
 
-const drawField = (ctx: CanvasRenderingContext2D, p: Projector, view: Viewport): void => {
-  const sky = ctx.createLinearGradient(0, 0, 0, view.height);
-  sky.addColorStop(0, SKY_TOP);
-  sky.addColorStop(1, SKY_LOW);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, view.width, view.height);
+const ZONE_MID_Y = (ZONE_BOTTOM + ZONE_TOP) / 2;
 
-  // grass: one big wedge of fair territory, drawn as a fan from home plate
-  const fan: Vec3[] = [vec(0, 0, 0)];
-  for (let a = -FOUL_ANGLE; a <= FOUL_ANGLE; a += 2.5) {
-    const d = fenceDistance(a);
-    fan.push(vec(d * Math.sin(radians(a)), 0, d * Math.cos(radians(a))));
-  }
-  ctx.fillStyle = GRASS;
-  if (poly(ctx, p, fan)) { ctx.closePath(); ctx.fill(); }
+// ---------------------------------------------------------------------------
+// ball
+// ---------------------------------------------------------------------------
 
-  // mowing stripes, so distance reads without needing a number
-  for (let i = -8; i < 8; i += 2) {
-    const a0 = (i * FOUL_ANGLE) / 8;
-    const a1 = ((i + 1) * FOUL_ANGLE) / 8;
-    const seg: Vec3[] = [vec(0, 0, 0)];
-    for (let a = a0; a <= a1 + 0.01; a += 1.2) {
-      const d = fenceDistance(a);
-      seg.push(vec(d * Math.sin(radians(a)), 0, d * Math.cos(radians(a))));
-    }
-    ctx.fillStyle = GRASS_DARK;
-    if (poly(ctx, p, seg)) { ctx.closePath(); ctx.fill(); }
+const drawBall = (
+  ctx: CanvasRenderingContext2D, p: Projector, pos: Vec3, glow = 0,
+): void => {
+  const s = p.project(pos);
+  if (!s) return;
+
+  const g = p.project(vec(pos.x, 0.01, pos.z));
+  if (g && pos.y < 40) {
+    const gr = Math.max(1.5, p.scaleAt(g.depth) * BALL_RADIUS * 1.4);
+    ctx.fillStyle = `rgba(0,0,0,${Math.max(0.08, 0.34 - pos.y * 0.012)})`;
+    ctx.beginPath();
+    ctx.ellipse(g.x, g.y, gr * 1.6, gr * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  // infield dirt
-  const dirt: Vec3[] = [];
-  for (let a = -FOUL_ANGLE; a <= FOUL_ANGLE; a += 3) {
-    dirt.push(vec(29 * Math.sin(radians(a)), 0, 29 * Math.cos(radians(a))));
+  const r = Math.max(3, p.scaleAt(s.depth) * BALL_RADIUS);
+  if (glow > 0) {
+    const halo = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 4.5);
+    halo.addColorStop(0, `rgba(255,232,160,${0.55 * glow})`);
+    halo.addColorStop(1, 'rgba(255,232,160,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 4.5, 0, Math.PI * 2);
+    ctx.fill();
   }
-  dirt.push(vec(0, 0, 0));
-  ctx.fillStyle = DIRT;
-  if (poly(ctx, p, dirt)) { ctx.closePath(); ctx.fill(); }
-
-  // distance rings at 100 / 120 / 140 m
-  ctx.lineWidth = 1;
-  for (const r of [100, 120, 140]) {
-    const ring: Vec3[] = [];
-    for (let a = -FOUL_ANGLE; a <= FOUL_ANGLE; a += 2) {
-      ring.push(vec(r * Math.sin(radians(a)), 0.02, r * Math.cos(radians(a))));
-    }
-    ctx.strokeStyle = r === 120 ? 'rgba(255,255,255,0.34)' : 'rgba(255,255,255,0.16)';
-    if (poly(ctx, p, ring)) ctx.stroke();
-  }
-
-  // foul lines
-  for (const s of [-1, 1]) {
-    const d = fenceDistance(FOUL_ANGLE);
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 2;
-    if (poly(ctx, p, [
-      vec(0, 0.02, 0),
-      vec(s * d * Math.sin(radians(FOUL_ANGLE)), 0.02, d * Math.cos(radians(FOUL_ANGLE))),
-    ])) ctx.stroke();
-  }
-
-  // fence
-  const top: Vec3[] = [];
-  const bottom: Vec3[] = [];
-  for (let a = -FOUL_ANGLE; a <= FOUL_ANGLE; a += 1.5) {
-    const d = fenceDistance(a);
-    const sx = d * Math.sin(radians(a));
-    const sz = d * Math.cos(radians(a));
-    top.push(vec(sx, FENCE_HEIGHT, sz));
-    bottom.push(vec(sx, 0, sz));
-  }
-  ctx.fillStyle = '#1e3a24';
-  if (poly(ctx, p, [...bottom, ...[...top].reverse()])) { ctx.closePath(); ctx.fill(); }
-  ctx.strokeStyle = '#e8e8e8';
-  ctx.lineWidth = 2;
-  if (poly(ctx, p, top)) ctx.stroke();
-
-  // mound
-  const mound: Vec3[] = [];
-  for (let a = 0; a < 360; a += 12) {
-    mound.push(vec(2.7 * Math.cos(radians(a)), 0.05, MOUND_DISTANCE + 2.7 * Math.sin(radians(a))));
-  }
-  ctx.fillStyle = DIRT;
-  if (poly(ctx, p, mound)) { ctx.closePath(); ctx.fill(); }
-};
-
-/** Crude pitcher: a silhouette. docs/SPEC.md 2-4 — there is no pitcher art. */
-const drawPitcher = (ctx: CanvasRenderingContext2D, p: Projector): void => {
-  const feet = p.project(vec(0, 0.254, MOUND_DISTANCE));
-  const head = p.project(vec(0, 2.05, MOUND_DISTANCE));
-  if (!feet || !head) return;
-  const h = feet.y - head.y;
-  const w = h * 0.30;
-  ctx.fillStyle = '#16233a';
-  ctx.fillRect(feet.x - w / 2, head.y + h * 0.16, w, h * 0.84);
+  ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.arc(feet.x, head.y + h * 0.10, h * 0.10, 0, Math.PI * 2);
+  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(24,28,38,0.8)';
+  ctx.lineWidth = Math.max(1, r * 0.14);
+  ctx.stroke();
+  // seam, so spin has something to show on
+  if (r > 5) {
+    ctx.strokeStyle = 'rgba(200,60,60,0.85)';
+    ctx.lineWidth = Math.max(1, r * 0.12);
+    ctx.beginPath();
+    ctx.arc(s.x - r * 0.25, s.y, r * 0.85, -1.0, 1.0);
+    ctx.stroke();
+  }
+};
+
+/**
+ * The last few positions of the pitch, fading out.
+ *
+ * Without this the ball is a dot that teleports: at 146 km/h it moves 68 cm per
+ * frame, and the eye reads discrete jumps as "the game is stuttering" rather
+ * than "the ball is fast". The trail is what turns the jump into speed.
+ */
+const drawPitchTrail = (
+  ctx: CanvasRenderingContext2D, p: Projector, state: GameState,
+): void => {
+  const flight = state.flight;
+  if (!flight) return;
+  for (let i = 1; i <= 7; i++) {
+    const t = state.time - i * (1 / 120);
+    if (t <= 0) break;
+    const s = p.project(ballAt(flight, t));
+    if (!s) continue;
+    const f = 1 - i / 8;
+    const r = Math.max(1, p.scaleAt(s.depth) * BALL_RADIUS * f);
+    ctx.fillStyle = `rgba(255,255,255,${0.30 * f})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+};
+
+// ---------------------------------------------------------------------------
+// strike zone and meet cursor
+// ---------------------------------------------------------------------------
+
+const zoneQuad = (p: Projector): readonly { x: number; y: number }[] | null => {
+  const corners = [
+    p.project(vec(-PLATE_HALF_WIDTH, ZONE_TOP, 0)),
+    p.project(vec(PLATE_HALF_WIDTH, ZONE_TOP, 0)),
+    p.project(vec(PLATE_HALF_WIDTH, ZONE_BOTTOM, 0)),
+    p.project(vec(-PLATE_HALF_WIDTH, ZONE_BOTTOM, 0)),
+  ];
+  if (corners.some((c) => c === null)) return null;
+  return corners as { x: number; y: number }[];
 };
 
 const drawZone = (ctx: CanvasRenderingContext2D, p: Projector): void => {
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 2;
-  if (poly(ctx, p, [
-    vec(-PLATE_HALF_WIDTH, ZONE_BOTTOM, 0), vec(PLATE_HALF_WIDTH, ZONE_BOTTOM, 0),
-    vec(PLATE_HALF_WIDTH, ZONE_TOP, 0), vec(-PLATE_HALF_WIDTH, ZONE_TOP, 0),
-  ])) { ctx.closePath(); ctx.stroke(); }
+  const q = zoneQuad(p);
+  if (!q) return;
+  const [a, b, c, d] = q as [
+    { x: number; y: number }, { x: number; y: number },
+    { x: number; y: number }, { x: number; y: number },
+  ];
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(120,190,255,0.055)';
+  ctx.fill();
+
+  // inner thirds
+  ctx.strokeStyle = 'rgba(190,225,255,0.20)';
   ctx.lineWidth = 1;
   for (let i = 1; i < 3; i++) {
-    const x = -PLATE_HALF_WIDTH + (2 * PLATE_HALF_WIDTH * i) / 3;
-    if (poly(ctx, p, [vec(x, ZONE_BOTTOM, 0), vec(x, ZONE_TOP, 0)])) ctx.stroke();
-    const y = ZONE_BOTTOM + ((ZONE_TOP - ZONE_BOTTOM) * i) / 3;
-    if (poly(ctx, p, [vec(-PLATE_HALF_WIDTH, y, 0), vec(PLATE_HALF_WIDTH, y, 0)])) ctx.stroke();
+    const f = i / 3;
+    ctx.beginPath();
+    ctx.moveTo(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+    ctx.lineTo(d.x + (c.x - d.x) * f, d.y + (c.y - d.y) * f);
+    ctx.moveTo(a.x + (d.x - a.x) * f, a.y + (d.y - a.y) * f);
+    ctx.lineTo(b.x + (c.x - b.x) * f, b.y + (c.y - b.y) * f);
+    ctx.stroke();
   }
+
+  // corner brackets rather than a full box: the eye needs the extent, not a cage
+  ctx.strokeStyle = 'rgba(225,240,255,0.72)';
+  ctx.lineWidth = 2.5;
+  const bracket = (
+    o: { x: number; y: number }, u: { x: number; y: number }, v: { x: number; y: number },
+  ): void => {
+    ctx.beginPath();
+    ctx.moveTo(o.x + (u.x - o.x) * 0.28, o.y + (u.y - o.y) * 0.28);
+    ctx.lineTo(o.x, o.y);
+    ctx.lineTo(o.x + (v.x - o.x) * 0.28, o.y + (v.y - o.y) * 0.28);
+    ctx.stroke();
+  };
+  bracket(a, b, d); bracket(b, a, c); bracket(c, b, d); bracket(d, a, c);
 };
 
-const drawCursor = (ctx: CanvasRenderingContext2D, p: Projector, state: GameState): void => {
+const drawCursor = (
+  ctx: CanvasRenderingContext2D, p: Projector, state: GameState, hot: number,
+): void => {
   const centre = p.project(vec(state.cursor.x, state.cursor.y, 0));
   const edge = p.project(vec(state.cursor.x + currentCatchRadius(state), state.cursor.y, 0));
   if (!centre || !edge) return;
   const r = Math.abs(edge.x - centre.x);
-  ctx.strokeStyle = state.whiffStreak >= 2 && state.player === 'yuki'
-    ? 'rgba(255,196,64,0.95)' : 'rgba(120,230,255,0.9)';
-  ctx.lineWidth = 2;
+
+  const boosted = state.whiffStreak >= 2 && state.player === 'yuki';
+  const tint = boosted ? '255,198,72' : hot > 0 ? '255,150,90' : '130,225,255';
+
+  const fillGrad = ctx.createRadialGradient(centre.x, centre.y, 0, centre.x, centre.y, r);
+  fillGrad.addColorStop(0, `rgba(${tint},0.20)`);
+  fillGrad.addColorStop(1, `rgba(${tint},0.03)`);
+  ctx.fillStyle = fillGrad;
+  ctx.beginPath();
+  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = `rgba(${tint},0.95)`;
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.fillRect(centre.x - 1, centre.y - 1, 2, 2);
-};
 
-const drawBall = (ctx: CanvasRenderingContext2D, p: Projector, pos: Vec3): void => {
-  const s = p.project(pos);
-  if (!s) return;
-  // shadow first, so height off the ground is readable
-  const g = p.project(vec(pos.x, 0.01, pos.z));
-  if (g) {
-    const gr = Math.max(2, p.scaleAt(g.depth) * BALL_RADIUS * 1.4);
-    ctx.fillStyle = 'rgba(0,0,0,0.30)';
-    ctx.beginPath();
-    ctx.ellipse(g.x, g.y, gr * 1.5, gr * 0.55, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const r = Math.max(4, p.scaleAt(s.depth) * BALL_RADIUS);
-  ctx.fillStyle = '#ffffff';
-  ctx.strokeStyle = 'rgba(20,20,20,0.85)';
+  // the sweet spot, drawn as its own ring — this is the thing being aimed
+  ctx.strokeStyle = `rgba(${tint},0.45)`;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.arc(centre.x, centre.y, r * 0.35, 0, Math.PI * 2);
   ctx.stroke();
+
+  ctx.strokeStyle = `rgba(255,255,255,0.9)`;
+  ctx.lineWidth = 1.5;
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(centre.x + dx * r * 0.16, centre.y + dy * r * 0.16);
+    ctx.lineTo(centre.x + dx * r * 0.42, centre.y + dy * r * 0.42);
+    ctx.stroke();
+  }
 };
 
-/** Which swing frame to show, given how long ago the bat met the ball. */
+// ---------------------------------------------------------------------------
+// batter
+// ---------------------------------------------------------------------------
+
+/**
+ * Which swing frame to show, given how long ago the bat met the ball.
+ *
+ * The five sprites are stance / takeback / IMPACT / follow / follow-through, and
+ * the cut begins at contact — so it begins at frame 2 and plays out, not at
+ * frame 0. Starting at 0 had the batter winding up after the ball had already
+ * left, which is the kind of thing that reads as "wrong" long before anyone can
+ * say why.
+ */
+const IMPACT_FRAME = 2;
 const swingFrame = (elapsed: number): string => {
   if (elapsed < 0) return 'stance';
-  const i = Math.min(4, Math.floor(elapsed / 0.055));
-  return `swing_${i}`;
+  return `swing_${Math.min(4, IMPACT_FRAME + Math.floor(elapsed / 0.085))}`;
 };
 
-const drawBatter = (
-  ctx: CanvasRenderingContext2D, p: Projector, state: GameState, sprites: Sprites,
+/**
+ * The batter as seen from behind, placed in screen space.
+ *
+ * Deliberately not projected. At the pitch camera the batter is 3.7 m from the
+ * eye and the zone is 4.0 m, so a physically-sized sprite is 97% of frame height
+ * and swallows the shot. In this beat the batter is framing, not information —
+ * so it is composed by eye and cropped by the bottom edge, the way the reference
+ * genre frames it.
+ */
+const drawBatterFromBehind = (
+  ctx: CanvasRenderingContext2D, view: Viewport, sprites: Sprites, hot: number,
 ): void => {
-  const swinging = state.swing !== null;
-  const elapsed = swinging ? (state.flightTime ?? 0.3) : -1;
-  const key = swinging ? swingFrame(elapsed) : 'stance';
+  const img = sprites.back;
+  if (!img || !img.complete || img.naturalWidth === 0) return;
+  // Sized so the batter owns the lower-left quadrant and nothing else. At
+  // physical scale the sprite is 95% of frame height and covers the strike zone,
+  // which is exactly backwards: the zone is what the player is looking at.
+  const h = view.height * 0.46;
+  const w = (h * img.naturalWidth) / img.naturalHeight;
+  const x = view.width * 0.185 - w / 2;
+  const y = view.height * 1.02 - h;
+
+  if (hot > 0) {
+    ctx.save();
+    ctx.shadowColor = `rgba(255,196,96,${0.75 * hot})`;
+    ctx.shadowBlur = 34 * hot;
+    ctx.drawImage(img, x, y, w, h);
+    ctx.restore();
+  }
+  ctx.drawImage(img, x, y, w, h);
+};
+
+/**
+ * The bat sweeping through, drawn over the behind view.
+ *
+ * The back sprite cannot animate — there is exactly one frame of it — so the
+ * swing is carried by an arc drawn in code. That is enough: what the eye needs
+ * at this moment is evidence that the bat crossed the zone, not anatomy.
+ */
+const drawBatArc = (
+  ctx: CanvasRenderingContext2D, view: Viewport, arc: number,
+): void => {
+  if (arc <= 0 || arc >= 1) return;
+  const cx = view.width * 0.30;
+  const cy = view.height * 0.74;
+  const radius = view.height * 0.52;
+  const from = -2.35;
+  const to = 0.55;
+  const angle = from + (to - from) * arc;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  // the smear behind the bat
+  for (let i = 1; i <= 6; i++) {
+    const a = angle - i * 0.16;
+    if (a < from) break;
+    ctx.strokeStyle = `rgba(255,255,255,${0.16 * (1 - i / 7) * (1 - arc * 0.4)})`;
+    ctx.lineWidth = 12 - i;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, a, a + 0.14);
+    ctx.stroke();
+  }
+  // the bat itself
+  const bx = cx + Math.cos(angle) * radius;
+  const by = cy + Math.sin(angle) * radius;
+  const hx = cx + Math.cos(angle) * radius * 0.28;
+  const hy = cy + Math.sin(angle) * radius * 0.28;
+  ctx.strokeStyle = '#1a1a1e';
+  ctx.lineWidth = 15;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy); ctx.lineTo(bx, by);
+  ctx.stroke();
+  ctx.strokeStyle = '#3a3a42';
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy); ctx.lineTo(bx, by);
+  ctx.stroke();
+  ctx.restore();
+};
+
+/** The batter at world scale, for the side-view cut. */
+const drawBatterFromSide = (
+  ctx: CanvasRenderingContext2D, p: Projector, sprites: Sprites,
+  sinceContact: number | null, hot: number,
+): void => {
+  const key = sinceContact === null ? 'stance' : swingFrame(sinceContact);
   const img = sprites[key] ?? sprites.stance;
   if (!img || !img.complete || img.naturalWidth === 0) return;
 
@@ -213,97 +327,17 @@ const drawBatter = (
   if (!feet || !head) return;
   const h = (feet.y - head.y) * 1.12;
   const w = (h * img.naturalWidth) / img.naturalHeight;
+  if (hot > 0) {
+    ctx.save();
+    ctx.shadowColor = `rgba(255,196,96,${0.8 * hot})`;
+    ctx.shadowBlur = 30 * hot;
+    ctx.drawImage(img, feet.x - w * 0.5, feet.y - h, w, h);
+    ctx.restore();
+  }
   ctx.drawImage(img, feet.x - w * 0.5, feet.y - h, w, h);
 };
 
-const fmt = (n: number, d = 1): string => n.toFixed(d);
-
-const drawHud = (
-  ctx: CanvasRenderingContext2D, state: GameState, view: Viewport,
-): void => {
-  const player = PLAYERS[state.player];
-  ctx.font = '600 15px "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif';
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(12, 12, 300, 74);
-  ctx.fillStyle = '#fff';
-  ctx.fillText(`${player.roman}  #${player.number}`, 24, 36);
-  ctx.font = '13px "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif';
-  ctx.fillStyle = '#cfe0f5';
-  ctx.fillText(
-    `ミート ${player.meet} / パワー ${player.power} / 弾道 ${player.trajectory}`, 24, 58);
-  ctx.fillText(`第 ${state.pitchCount} 球   空振り連続 ${state.whiffStreak}`, 24, 76);
-
-  if (state.pitch && state.phase !== 'ready') {
-    ctx.font = '600 15px "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif';
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(view.width - 212, 12, 200, 30);
-    ctx.fillStyle = '#ffe9a8';
-    ctx.fillText(PITCH_LABEL[state.pitch.type], view.width - 200, 33);
-  }
-
-  const swing = state.swing;
-  if (state.phase === 'result' && swing) {
-    const c = swing.contact;
-    const lines: string[] = [];
-    const label: Record<string, string> = {
-      just: 'ジャストミート', good: '芯を捉えた', poor: '凡打',
-      jammed: '差し込まれた', reachedOut: '泳いだ', foul: 'ファウル', whiff: '空振り',
-    };
-    lines.push(label[c.kind] ?? c.kind);
-    if (c.kind !== 'whiff') {
-      lines.push(`初速 ${fmt(c.exitVelocity * 3.6)} km/h   打ち出し角 ${fmt(c.launchAngle)}°`);
-      lines.push(`方向 ${fmt(c.sprayAngle)}°   飛距離 ${fmt(swing.field?.distance ?? 0)} m`);
-      const outcome: Record<string, string> = {
-        homeRun: 'ホームラン', offTheWall: 'フェンス直撃', inPlay: '凡打', foul: 'ファウル',
-      };
-      lines.push(outcome[swing.field?.outcome ?? 'inPlay'] ?? '');
-      if (swing.titanic) lines.push('★ 特大弾');
-    }
-    // the after-the-fact stamp: how far off, in units a human can feel
-    lines.push(`ミート誤差 ${fmt(c.e * 100)} cm`);
-    lines.push(`タイミング ${c.t >= 0 ? '+' : ''}${fmt(c.t * 1000, 0)} ms `
-      + `(${c.t >= 0 ? '+' : ''}${fmt(c.t * 60, 1)} フレーム)`);
-
-    const h = 26 + lines.length * 22;
-    ctx.fillStyle = 'rgba(0,0,0,0.62)';
-    ctx.fillRect(12, view.height - h - 52, 360, h);
-    ctx.fillStyle = '#fff';
-    ctx.font = '600 16px "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif';
-    lines.forEach((s, i) => {
-      ctx.fillStyle = i === 0 ? '#ffd76a' : '#e8eefa';
-      ctx.fillText(s, 24, view.height - h - 26 + i * 22);
-    });
-  }
-
-  ctx.font = '13px "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  const help = state.phase === 'ready' || state.phase === 'result'
-    ? 'Enter / 右クリック: 次の投球     1 2 3: 選手変更     マウス: カーソル'
-    : 'クリック または Space: スイング';
-  ctx.fillText(help, 24, view.height - 22);
-};
-
-/** Timing bar: shows the window the swing has to land in. */
-const drawTimingBar = (
-  ctx: CanvasRenderingContext2D, state: GameState, view: Viewport,
-): void => {
-  if (state.phase !== 'pitching' || !state.flight) return;
-  const w = 360;
-  const x = view.width / 2 - w / 2;
-  const y = view.height - 46;
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(x, y, w, 12);
-  const half = w / 2;
-  ctx.fillStyle = 'rgba(120,230,255,0.35)';
-  ctx.fillRect(x + half - (half * T_MISS) / T_MISS * 0.5, y, half, 12);
-  ctx.fillStyle = 'rgba(255,215,106,0.9)';
-  ctx.fillRect(x + half - (half * T_JUST) / T_MISS, y, (2 * half * T_JUST) / T_MISS, 12);
-  // marker for where a swing pressed right now would land
-  const err = state.time + 0.130 - state.flight.crossTime;
-  const px = x + half + (half * err) / T_MISS;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(Math.max(x, Math.min(x + w, px)) - 1.5, y - 4, 3, 20);
-};
+// ---------------------------------------------------------------------------
 
 export const drawScene = (
   ctx: CanvasRenderingContext2D,
@@ -311,33 +345,52 @@ export const drawScene = (
   state: GameState,
   sprites: Sprites,
   view: Viewport,
+  show: Presentation,
 ): void => {
-  drawField(ctx, p, view);
-  drawPitcher(ctx, p);
+  drawStadium(ctx, p, view, show.stadium);
 
-  if (state.phase === 'flight' || (state.phase === 'result' && state.swing?.field)) {
-    const swing = state.swing;
-    if (swing && swing.trail.length > 1) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 2;
-      const upTo = state.phase === 'flight'
-        ? Math.max(2, Math.round((state.flightTime ?? 0) / swing.hangTime * swing.trail.length))
-        : swing.trail.length;
-      if (poly(ctx, p, swing.trail.slice(0, upTo))) ctx.stroke();
-      drawBall(ctx, p, battedBallAt(swing, state.flightTime ?? swing.hangTime));
+  if (show.mode !== 'flight') drawPitcher(ctx, p, show.windup);
+
+  // batted ball and its arc
+  const swing = state.swing;
+  if (swing && swing.trail.length > 1 && show.sinceContact !== null) {
+    const upTo = Math.max(
+      2, Math.round(((state.flightTime ?? 0) / swing.hangTime) * swing.trail.length));
+    const visible = swing.trail.slice(0, Math.min(upTo, swing.trail.length));
+    ctx.beginPath();
+    let started = false;
+    for (const v of visible) {
+      const s = p.project(v);
+      if (!s) continue;
+      if (started) ctx.lineTo(s.x, s.y); else { ctx.moveTo(s.x, s.y); started = true; }
     }
+    if (started) {
+      ctx.strokeStyle = swing.titanic ? 'rgba(255,214,120,0.75)' : 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = swing.titanic ? 3.5 : 2.5;
+      ctx.stroke();
+    }
+    drawBall(ctx, p, battedBallAt(swing, state.flightTime ?? swing.hangTime),
+      swing.titanic ? 1 : 0.35);
   }
 
-  drawBatter(ctx, p, state, sprites);
+  if (show.mode === 'swing') {
+    drawBatterFromSide(ctx, p, sprites, show.sinceContact, show.hot);
+  }
 
-  if (state.phase === 'pitching' || state.phase === 'ready') {
+  if (show.mode === 'pitch') {
+    drawBatterFromBehind(ctx, view, sprites, show.hot);
     drawZone(ctx, p);
     if (state.flight && state.phase === 'pitching') {
+      drawPitchTrail(ctx, p, state);
       drawBall(ctx, p, ballAt(state.flight, state.time));
+    } else if (state.phase === 'ready' || state.phase === 'result') {
+      // hold the ball at the release point so the eye knows where to look
+      const s = p.project(vec(0.35, 1.85, 16.7));
+      if (s && state.phase === 'ready') drawBall(ctx, p, vec(0.35, 1.85, 16.7));
     }
-    drawCursor(ctx, p, state);
+    drawCursor(ctx, p, state, show.hot);
+    drawBatArc(ctx, view, show.swingArc);
   }
-
-  drawTimingBar(ctx, state, view);
-  drawHud(ctx, state, view);
 };
+
+export { ZONE_MID_Y };

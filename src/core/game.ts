@@ -22,8 +22,10 @@ import { resolveContact, catchRadius } from './bat.js';
 import { simulateBattedBall } from './physics.js';
 import type { FieldResult } from './stadium.js';
 import { judgeBattedBall } from './stadium.js';
+import type { Round, RoundEvent, RoundMode } from './round.js';
+import { applySwing, applyTake, newRound } from './round.js';
 
-export type Phase = 'ready' | 'pitching' | 'flight' | 'result';
+export type Phase = 'ready' | 'pitching' | 'flight' | 'result' | 'roundOver';
 
 export type Cursor = { readonly x: number; readonly y: number };
 
@@ -52,6 +54,9 @@ export type GameState = {
   /** Seconds since the batted ball was struck; null until then. */
   readonly flightTime: number | null;
   readonly pitchCount: number;
+  readonly round: Round;
+  /** What the last completed swing amounted to; drives the HUD and effects. */
+  readonly lastEvent: RoundEvent | null;
 };
 
 export type Command =
@@ -59,14 +64,17 @@ export type Command =
   | { readonly kind: 'moveCursor'; readonly x: number; readonly y: number }
   | { readonly kind: 'swing' }
   | { readonly kind: 'pitch' }
-  | { readonly kind: 'selectPlayer'; readonly player: PlayerId };
+  | { readonly kind: 'selectPlayer'; readonly player: PlayerId }
+  | { readonly kind: 'newRound'; readonly mode?: RoundMode };
 
 /** Cursor travel is limited to a little outside the zone. */
 const CURSOR_X = PLATE_HALF_WIDTH + 0.16;
 const CURSOR_Y_LO = ZONE_BOTTOM - 0.18;
 const CURSOR_Y_HI = ZONE_TOP + 0.18;
 
-export const initialState = (seed: number, player: PlayerId = 'takaya'): GameState => ({
+export const initialState = (
+  seed: number, player: PlayerId = 'takaya', mode: RoundMode = 'classic',
+): GameState => ({
   rng: seedRng(seed),
   phase: 'ready',
   time: 0,
@@ -79,6 +87,8 @@ export const initialState = (seed: number, player: PlayerId = 'takaya'): GameSta
   ballPos: null,
   flightTime: null,
   pitchCount: 0,
+  round: newRound(mode, PLAYERS[player].skill === 'tenacity'),
+  lastEvent: null,
 });
 
 /** Where the pitch is at time t, interpolated from the integrated samples. */
@@ -132,13 +142,17 @@ const doSwing = (state: GameState): GameState => {
     timingError: state.time + T_SWING - state.flight.crossTime,
     whiffStreak: state.whiffStreak,
   });
+  const multiplier = state.pitch?.multiplier ?? 1;
 
   if (contact.kind === 'whiff') {
+    const applied = applySwing(state.round, { contact, field: null, multiplier });
     return {
       ...state,
-      phase: 'result',
+      phase: applied.round.over ? 'roundOver' : 'result',
       swing: { contact, field: null, trail: [], hangTime: 0, apex: 0, titanic: false },
       whiffStreak: state.whiffStreak + 1,
+      round: applied.round,
+      lastEvent: applied.event,
     };
   }
 
@@ -151,9 +165,11 @@ const doSwing = (state: GameState): GameState => {
     contactHeight: contact.contactHeight,
   });
   const field = judgeBattedBall(ball.trail, ball.landing, ball.distance);
+  const applied = applySwing(state.round, { contact, field, multiplier });
 
   return {
     ...state,
+    // the round only ENDS once the ball has landed; the flight is the payoff
     phase: 'flight',
     flightTime: 0,
     swing: {
@@ -165,6 +181,8 @@ const doSwing = (state: GameState): GameState => {
       titanic: ball.distance >= TITANIC_DISTANCE,
     },
     whiffStreak: 0,
+    round: applied.round,
+    lastEvent: applied.event,
   };
 };
 
@@ -188,12 +206,22 @@ export const battedBallAt = (swing: Swing, t: number): Vec3 => {
   };
 };
 
+/** Did a pitch that was let go cross the zone? */
+const crossedTheZone = (flight: PitchFlight): boolean => {
+  const { x, y } = flight.crossPoint;
+  return Math.abs(x) <= PLATE_HALF_WIDTH && y >= ZONE_BOTTOM && y <= ZONE_TOP;
+};
+
 export const step = (state: GameState, cmd: Command): GameState => {
   switch (cmd.kind) {
+    case 'newRound':
+      return initialState(
+        state.rng.s0 + state.pitchCount + 1, state.player, cmd.mode ?? state.round.mode);
+
     case 'selectPlayer':
       return state.phase === 'pitching' || state.phase === 'flight'
         ? state
-        : { ...initialState(state.rng.s0, cmd.player), pitchCount: state.pitchCount };
+        : initialState(state.rng.s0, cmd.player, state.round.mode);
 
     case 'moveCursor':
       return {
@@ -217,7 +245,15 @@ export const step = (state: GameState, cmd: Command): GameState => {
         if (!flight) return state;
         // the ball is past the batter and untouched: a taken pitch
         if (time > flight.crossTime + 0.35) {
-          return { ...state, phase: 'result', time, ballPos: ballAt(flight, time) };
+          const applied = applyTake(state.round, crossedTheZone(flight));
+          return {
+            ...state,
+            phase: applied.round.over ? 'roundOver' : 'result',
+            time,
+            ballPos: ballAt(flight, time),
+            round: applied.round,
+            lastEvent: applied.event,
+          };
         }
         return { ...state, time, ballPos: ballAt(flight, time) };
       }
@@ -226,7 +262,11 @@ export const step = (state: GameState, cmd: Command): GameState => {
         if (!swing) return state;
         const flightTime = (state.flightTime ?? 0) + cmd.dt;
         if (flightTime >= swing.hangTime) {
-          return { ...state, phase: 'result', flightTime: swing.hangTime };
+          return {
+            ...state,
+            phase: state.round.over ? 'roundOver' : 'result',
+            flightTime: swing.hangTime,
+          };
         }
         return { ...state, flightTime };
       }
