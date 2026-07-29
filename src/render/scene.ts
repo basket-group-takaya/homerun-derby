@@ -20,13 +20,14 @@ import { ballAt, battedBallAt, currentCatchRadius } from '../core/game.js';
 import type { Projector, Viewport } from './camera.js';
 import type { StadiumFlags } from './stadium.js';
 import { drawStadium, drawPitcher } from './stadium.js';
+import { RELEASE_POINT } from '../core/pitch.js';
 import {
   BALL_RADIUS, PLATE_HALF_WIDTH, ZONE_BOTTOM, ZONE_TOP,
 } from '../core/constants.js';
 
 export type Sprites = Partial<Record<string, HTMLImageElement>>;
 
-export type ViewMode = 'pitch' | 'swing' | 'flight';
+export type ViewMode = 'pitch' | 'flight';
 
 export type Presentation = {
   readonly mode: ViewMode;
@@ -37,6 +38,8 @@ export type Presentation = {
   /** 0..1, how far through the bat's arc we are during a swing. */
   readonly swingArc: number;
   readonly stadium: StadiumFlags;
+  /** 1 while the batter is in shot, fading to 0 as the camera pulls back. */
+  readonly batterFade: number;
   /** Set while the player is on a home-run streak. docs/REFERENCE-HB2.md 9-B5. */
   readonly hot: number;
 };
@@ -219,21 +222,6 @@ const drawCursor = (
 // ---------------------------------------------------------------------------
 
 /**
- * Which swing frame to show, given how long ago the bat met the ball.
- *
- * The five sprites are stance / takeback / IMPACT / follow / follow-through, and
- * the cut begins at contact — so it begins at frame 2 and plays out, not at
- * frame 0. Starting at 0 had the batter winding up after the ball had already
- * left, which is the kind of thing that reads as "wrong" long before anyone can
- * say why.
- */
-const IMPACT_FRAME = 2;
-const swingFrame = (elapsed: number): string => {
-  if (elapsed < 0) return 'stance';
-  return `swing_${Math.min(4, IMPACT_FRAME + Math.floor(elapsed / 0.085))}`;
-};
-
-/**
  * The batter as seen from behind, placed in screen space.
  *
  * Deliberately not projected. At the pitch camera the batter is 3.7 m from the
@@ -243,26 +231,42 @@ const swingFrame = (elapsed: number): string => {
  * genre frames it.
  */
 const drawBatterFromBehind = (
-  ctx: CanvasRenderingContext2D, view: Viewport, sprites: Sprites, hot: number,
+  ctx: CanvasRenderingContext2D, view: Viewport, sprites: Sprites,
+  hot: number, fade: number,
 ): void => {
   const img = sprites.back;
-  if (!img || !img.complete || img.naturalWidth === 0) return;
-  // Sized so the batter owns the lower-left quadrant and nothing else. At
-  // physical scale the sprite is 95% of frame height and covers the strike zone,
-  // which is exactly backwards: the zone is what the player is looking at.
-  const h = view.height * 0.46;
+  if (!img || !img.complete || img.naturalWidth === 0 || fade <= 0.01) return;
+  // LOWER-LEFT, 52% of frame height, feet on the bottom edge. All three numbers
+  // come off measured reference footage (docs/REFERENCE-HB2.md 3-1), not taste.
+  //
+  // Left is not negotiable. From behind the plate screen-right is +x is first
+  // base (pinned by tests/projection.test.ts), and a right-handed batter stands
+  // at x < 0 because he faces across the plate toward first base. He was briefly
+  // moved to the right so the back sprite's head direction would work, and that
+  // put him in the left-handed box during the pitch and teleported him to the
+  // right-handed box at contact. Never again: there is a regression test.
+  //
+  // KNOWN LIMITATION: assets/player/*/back.png is a straight-on rear view whose
+  // implied camera sits on the third-base side, so the head is turned to the
+  // frame's LEFT and the face is visible in profile. The reference game shows
+  // only the back of the head. This cannot be fixed by moving the camera — the
+  // strike zone has to stay near the view axis to remain face-on — so it needs
+  // different art. docs/PROGRESS.md star-judgement 11.
+  const h = view.height * 0.52;
   const w = (h * img.naturalWidth) / img.naturalHeight;
-  const x = view.width * 0.185 - w / 2;
-  const y = view.height * 1.02 - h;
+  const x = view.width * 0.26 - w / 2;
+  const y = view.height * 1.00 - h;
 
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, fade);
   if (hot > 0) {
-    ctx.save();
     ctx.shadowColor = `rgba(255,196,96,${0.75 * hot})`;
     ctx.shadowBlur = 34 * hot;
     ctx.drawImage(img, x, y, w, h);
-    ctx.restore();
+    ctx.shadowBlur = 0;
   }
   ctx.drawImage(img, x, y, w, h);
+  ctx.restore();
 };
 
 /**
@@ -276,16 +280,19 @@ const drawBatArc = (
   ctx: CanvasRenderingContext2D, view: Viewport, arc: number,
 ): void => {
   if (arc <= 0 || arc >= 1) return;
+  // Pivot at the batter's hands, lower-left. The bat sweeps from up over his
+  // shoulder round to pointing at the frame's RIGHT, which is where the
+  // reference footage has it at contact: extended horizontally across the plate.
   const cx = view.width * 0.30;
-  const cy = view.height * 0.74;
-  const radius = view.height * 0.52;
+  const cy = view.height * 0.720;
+  const radius = view.height * 0.255;
   const from = -2.35;
-  const to = 0.55;
+  const to = -0.10;
   const angle = from + (to - from) * arc;
 
   ctx.save();
   ctx.lineCap = 'round';
-  // the smear behind the bat
+  // the smear behind the bat, i.e. at angles it has already passed
   for (let i = 1; i <= 6; i++) {
     const a = angle - i * 0.16;
     if (a < from) break;
@@ -313,29 +320,16 @@ const drawBatArc = (
   ctx.restore();
 };
 
-/** The batter at world scale, for the side-view cut. */
-const drawBatterFromSide = (
-  ctx: CanvasRenderingContext2D, p: Projector, sprites: Sprites,
-  sinceContact: number | null, hot: number,
-): void => {
-  const key = sinceContact === null ? 'stance' : swingFrame(sinceContact);
-  const img = sprites[key] ?? sprites.stance;
-  if (!img || !img.complete || img.naturalWidth === 0) return;
-
-  const feet = p.project(vec(-0.78, 0, -0.15));
-  const head = p.project(vec(-0.78, 1.75, -0.15));
-  if (!feet || !head) return;
-  const h = (feet.y - head.y) * 1.12;
-  const w = (h * img.naturalWidth) / img.naturalHeight;
-  if (hot > 0) {
-    ctx.save();
-    ctx.shadowColor = `rgba(255,196,96,${0.8 * hot})`;
-    ctx.shadowBlur = 30 * hot;
-    ctx.drawImage(img, feet.x - w * 0.5, feet.y - h, w, h);
-    ctx.restore();
-  }
-  ctx.drawImage(img, feet.x - w * 0.5, feet.y - h, w, h);
-};
+/*
+ * There is deliberately no side-view batter here any more.
+ *
+ * The swing_0..4 sprites are drawn from the first-base side (chest to camera).
+ * Showing them mid-swing meant cutting across the plate, and the batter then
+ * appeared to change batter's box at the moment of contact - the single worst
+ * bug in the build. Removing the cut costs those fifteen sprites their use in
+ * play, and that cost is the argument for a rear-view swing sheet. See
+ * docs/PROGRESS.md star-judgement 11.
+ */
 
 // ---------------------------------------------------------------------------
 
@@ -373,20 +367,15 @@ export const drawScene = (
       swing.titanic ? 1 : 0.35);
   }
 
-  if (show.mode === 'swing') {
-    drawBatterFromSide(ctx, p, sprites, show.sinceContact, show.hot);
-  }
-
   if (show.mode === 'pitch') {
-    drawBatterFromBehind(ctx, view, sprites, show.hot);
+    drawBatterFromBehind(ctx, view, sprites, show.hot, show.batterFade);
     drawZone(ctx, p);
     if (state.flight && state.phase === 'pitching') {
       drawPitchTrail(ctx, p, state);
       drawBall(ctx, p, ballAt(state.flight, state.time));
-    } else if (state.phase === 'ready' || state.phase === 'result') {
-      // hold the ball at the release point so the eye knows where to look
-      const s = p.project(vec(0.35, 1.85, 16.7));
-      if (s && state.phase === 'ready') drawBall(ctx, p, vec(0.35, 1.85, 16.7));
+    } else if (state.phase === 'ready') {
+      // hold the ball in the pitcher's hand so the eye knows where to look
+      drawBall(ctx, p, RELEASE_POINT);
     }
     drawCursor(ctx, p, state, show.hot);
     drawBatArc(ctx, view, show.swingArc);

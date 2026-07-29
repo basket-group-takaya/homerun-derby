@@ -9,10 +9,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  makeProjector, BATTING_CAMERA, PITCH_CAMERA, SWING_CAMERA, shakeCamera,
-  cameraAfterContact, CUT_SWING_END, CUT_PULLBACK_END,
+  makeProjector, BATTING_CAMERA, PITCH_CAMERA, shakeCamera,
+  cameraAfterContact, CUT_HOLD_END, CUT_PULLBACK_END,
 } from '../src/render/camera.js';
 import { vec } from '../src/core/vec.js';
+import { RELEASE_POINT } from '../src/core/pitch.js';
 import {
   PLATE_HALF_WIDTH, ZONE_BOTTOM, ZONE_TOP, FENCE_CENTRE, MOUND_DISTANCE, FENCE_HEIGHT,
 } from '../src/core/constants.js';
@@ -186,7 +187,7 @@ test('the pitch camera still shows centre field, so a home run has somewhere to 
 
 test('the ball grows several times over on its way to the plate', () => {
   const p = makeProjector(PITCH_CAMERA, VIEW);
-  const released = p.project(vec(0.35, 1.85, 16.7));
+  const released = p.project(RELEASE_POINT);
   const arriving = p.project(vec(0, ZONE_MID_Y, 0));
   assert.ok(released && arriving);
   const growth = p.scaleAt(arriving.depth) / p.scaleAt(released.depth);
@@ -272,17 +273,31 @@ test('shake of zero is the identity', () => {
   assert.equal(shakeCamera(PITCH_CAMERA, { x: 0, y: 0 }), PITCH_CAMERA);
 });
 
-test('the impact cut holds the side view, then hands over to the follow camera', () => {
+test('the impact holds the PITCH camera and never crosses the plate', () => {
+  // The regression this pins: cutting to a camera on the far side of the plate at
+  // contact made the batter appear to swap batter's box mid-swing.
   const ball = vec(20, 25, 60);
-  assert.equal(cameraAfterContact(0, ball), SWING_CAMERA);
-  assert.equal(cameraAfterContact(CUT_SWING_END, ball), SWING_CAMERA);
+  assert.equal(cameraAfterContact(0, ball), PITCH_CAMERA);
+  assert.equal(cameraAfterContact(CUT_HOLD_END, ball), PITCH_CAMERA);
 
-  const mid = cameraAfterContact((CUT_SWING_END + CUT_PULLBACK_END) / 2, ball);
-  assert.notDeepEqual(mid, SWING_CAMERA, 'the pull-back must have started');
-  assert.ok(mid.vfov > SWING_CAMERA.vfov, 'the pull-back should widen the view');
+  const mid = cameraAfterContact((CUT_HOLD_END + CUT_PULLBACK_END) / 2, ball);
+  assert.notDeepEqual(mid, PITCH_CAMERA, 'the pull-back must have started');
 
   const late = cameraAfterContact(2.0, ball);
-  assert.ok(late.target.z > SWING_CAMERA.target.z, 'the late camera must look downfield');
+  assert.ok(late.target.z > PITCH_CAMERA.target.z, 'the late camera must look downfield');
+
+  // every camera in the sequence must keep the batter on the same side of the plate
+  const batter = vec(-0.78, 1.0, -0.15);
+  const plate = vec(0, 0.05, 0);
+  for (const t of [0, 0.08, CUT_HOLD_END, 0.25, 0.4]) {
+    const pr = makeProjector(cameraAfterContact(t, ball), VIEW);
+    const b = pr.project(batter);
+    const h = pr.project(plate);
+    if (!b || !h) continue;
+    assert.ok(b.x < h.x,
+      `at t=${t} the batter (x=${b.x.toFixed(0)}) must stay LEFT of the plate `
+      + `(x=${h.x.toFixed(0)}): a right-handed batter never changes box`);
+  }
 });
 
 test('the cut never leaves the ball behind the camera once it is following', () => {

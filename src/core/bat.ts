@@ -9,9 +9,11 @@
  */
 
 import type { PlayerSpec } from './constants.js';
+import type { BatSpec } from './bats.js';
+import { BATS, DEFAULT_BAT, effectiveMaxExit } from './bats.js';
 import {
   AIM_HIGH_FACTOR, BALL_RADIUS, CURSOR_RADIUS, BASE_LAUNCH_ANGLE, EXIT_VELOCITY_MAX,
-  FOUL_ANGLE, HEIGHT_REF, K_HEIGHT, K_PHI, K_THETA, MAX_EXIT_KMH,
+  FOUL_ANGLE, HEIGHT_REF, K_HEIGHT, K_PHI, K_THETA,
   PASSION_CURSOR_BONUS, PASSION_EXIT_BONUS, PASSION_WHIFF_STREAK,
   Q_FOUL, Q_GOOD, Q_MEET_EXP, Q_TIME_EXP, R_JUST_RATIO,
   THETA_MAX, THETA_MIN, T_JUST, T_MISS, V_MIN,
@@ -36,6 +38,8 @@ export type ContactInput = {
   readonly timingError: number;
   /** Consecutive whiffs so far this round, for yuki's skill. */
   readonly whiffStreak: number;
+  /** Equipped bat. Optional so existing call sites keep working. */
+  readonly bat?: BatSpec;
 };
 
 export type Contact = {
@@ -62,8 +66,10 @@ export type Contact = {
  * yuki's "passion" widens the cursor for one swing after consecutive whiffs, so
  * a cold streak has a way out.
  */
-export const catchRadius = (player: PlayerSpec, whiffStreak: number): number => {
-  const base = CURSOR_RADIUS[player.meet];
+export const catchRadius = (
+  player: PlayerSpec, whiffStreak: number, bat: BatSpec = BATS[DEFAULT_BAT],
+): number => {
+  const base = CURSOR_RADIUS[player.meet] * bat.meet;
   const boosted = player.skill === 'passion' && whiffStreak >= PASSION_WHIFF_STREAK
     ? base * PASSION_CURSOR_BONUS
     : base;
@@ -92,11 +98,12 @@ const classify = (e: number, t: number, q: number, radius: number, phi: number):
  */
 export const resolveContact = (input: ContactInput): Contact => {
   const { player, cursor, ball, timingError: t, whiffStreak } = input;
+  const bat = input.bat ?? BATS[DEFAULT_BAT];
 
   const dx = ball.x - cursor.x;
   const u = ball.y - cursor.y;
   const e = Math.hypot(dx, u);
-  const radius = catchRadius(player, whiffStreak);
+  const radius = catchRadius(player, whiffStreak, bat);
 
   const miss = (): Contact => ({
     kind: 'whiff', e, t, u, quality: 0,
@@ -117,7 +124,10 @@ export const resolveContact = (input: ContactInput): Contact => {
   const qTime = 1 - timeError * timeError;
   const quality = Math.pow(qMeet, Q_MEET_EXP) * Math.pow(qTime, Q_TIME_EXP);
 
-  const maxExit = MAX_EXIT_KMH[player.power] / 3.6;
+  // The bat scales the CEILING, not the instantaneous value. See the long
+  // comment on effectiveMaxExit: scaling the value clamps at the physical limit
+  // and destroys the monotonicity PROMPT.md 3-4 requires.
+  const maxExit = effectiveMaxExit(player.power, bat, player.skill === 'passion');
   let exitVelocity = V_MIN + (maxExit - V_MIN) * quality;
 
   // launch angle: base from the trajectory rank, plus undercut, plus a small

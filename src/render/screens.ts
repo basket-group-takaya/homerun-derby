@@ -20,6 +20,8 @@ import {
   PLAYERS, PLAYER_IDS, PLAYER_FLAVOUR, SKILL_NAME, SKILL_NOTE,
 } from '../core/constants.js';
 import type { RoundMode } from '../core/round.js';
+import type { BatId } from '../core/bats.js';
+import { BATS, BAT_IDS } from '../core/bats.js';
 import type { Viewport } from './camera.js';
 
 const FONT = '"Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif';
@@ -70,7 +72,7 @@ export type CardBox = {
 /** Where the three cards sit. main.ts hit-tests taps against this. */
 export const cardBoxes = (view: Viewport, insets: Insets): readonly CardBox[] => {
   const pad = view.width * 0.045;
-  const top = insets.top + view.height * 0.235;
+  const top = insets.top + view.height * 0.258;
   const bottom = view.height - insets.bottom - view.width * 0.20;
   const gap = view.width * 0.028;
   const h = (bottom - top - gap * 2) / 3;
@@ -239,6 +241,8 @@ export const drawTitle = (
   mode: RoundMode,
   best: number,
   muted: boolean,
+  points: number,
+  equippedName: string,
 ): void => {
   const g = ctx.createLinearGradient(0, 0, 0, view.height);
   g.addColorStop(0, '#070c18');
@@ -251,16 +255,32 @@ export const drawTitle = (
   const cx = view.width / 2;
   ctx.font = `800 ${view.width * 0.088}px ${FONT}`;
   ctx.fillStyle = '#ffd76a';
-  ctx.fillText('BASKET', cx, insets.top + view.height * 0.085);
+  ctx.fillText('BASKET', cx, insets.top + view.height * 0.122);
   ctx.font = `800 ${view.width * 0.062}px ${FONT}`;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('HOME RUN DERBY', cx, insets.top + view.height * 0.128);
+  ctx.fillText('HOME RUN DERBY', cx, insets.top + view.height * 0.162);
 
   ctx.font = `600 ${view.width * 0.034}px ${FONT}`;
   ctx.fillStyle = 'rgba(160,182,214,0.85)';
   ctx.fillText(
     best > 0 ? `自己ベスト ${best}　　選手を選んでください` : '選手を選んでください',
-    cx, insets.top + view.height * 0.175);
+    cx, insets.top + view.height * 0.198);
+  ctx.font = `700 ${view.width * 0.032}px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,215,106,0.92)';
+  ctx.fillText(`${points.toLocaleString()} PT　　バット：${equippedName}`,
+    cx, insets.top + view.height * 0.228);
+
+  // shop button, top-left
+  const shopBtn = shopOpenBox(view, insets);
+  roundRect(ctx, shopBtn.x, shopBtn.y, shopBtn.w, shopBtn.h, shopBtn.h / 2);
+  ctx.fillStyle = 'rgba(46,64,96,0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,215,106,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.font = `700 ${shopBtn.h * 0.40}px ${FONT}`;
+  ctx.fillStyle = '#ffd76a';
+  ctx.fillText('バット工房', shopBtn.x + shopBtn.w / 2, shopBtn.y + shopBtn.h * 0.63);
 
   // sound toggle
   const sb = soundBox(view, insets);
@@ -385,4 +405,182 @@ export const drawCutIn = (
   ctx.moveTo(slide - skew, y + h);
   ctx.lineTo(slide + view.width * 1.2 - skew * 2, y + h);
   ctx.stroke();
+};
+
+// ---------------------------------------------------------------------------
+// bat shop — owner request, 令和8年7月30日
+// ---------------------------------------------------------------------------
+
+export type ShopRow = {
+  readonly bat: BatId;
+  readonly x: number; readonly y: number;
+  readonly w: number; readonly h: number;
+};
+
+/** Where the shop rows sit. main.ts hit-tests taps against this. */
+export const shopRows = (view: Viewport, insets: Insets): readonly ShopRow[] => {
+  const pad = view.width * 0.045;
+  const top = insets.top + view.height * 0.185;
+  const bottom = view.height - insets.bottom - view.width * 0.155;
+  const gap = view.width * 0.020;
+  const h = (bottom - top - gap * (BAT_IDS.length - 1)) / BAT_IDS.length;
+  return BAT_IDS.map((bat, i) => ({
+    bat, x: pad, y: top + i * (h + gap), w: view.width - pad * 2, h,
+  }));
+};
+
+/** The back button at the foot of the shop. */
+export const shopBackBox = (view: Viewport, insets: Insets): {
+  x: number; y: number; w: number; h: number;
+} => {
+  const w = view.width * 0.44;
+  const h = view.width * 0.105;
+  return {
+    x: view.width / 2 - w / 2,
+    y: view.height - insets.bottom - view.width * 0.125,
+    w, h,
+  };
+};
+
+/** The shop button on the title screen. */
+export const shopOpenBox = (view: Viewport, insets: Insets): {
+  x: number; y: number; w: number; h: number;
+} => {
+  const w = view.width * 0.30;
+  const h = view.width * 0.085;
+  return { x: view.width * 0.045, y: insets.top + view.width * 0.030, w, h };
+};
+
+const trait = (
+  ctx: CanvasRenderingContext2D, x: number, y: number, size: number,
+  label: string, value: number, suffix: string,
+): number => {
+  const text = value === 1
+    ? '—'
+    : `${value > 1 ? '+' : ''}${Math.round((value - 1) * 100)}%${suffix}`;
+  ctx.font = `600 ${size * 0.78}px ${FONT}`;
+  ctx.fillStyle = 'rgba(158,178,208,0.9)';
+  ctx.fillText(label, x, y);
+  const lw = ctx.measureText(label).width;
+  ctx.font = `800 ${size}px ${FONT}`;
+  ctx.fillStyle = value > 1 ? '#8fe3ff' : value < 1 ? '#ff9a7a' : 'rgba(140,158,186,0.7)';
+  ctx.fillText(text, x + lw + size * 0.35, y);
+  return lw + ctx.measureText(text).width + size * 1.15;
+};
+
+const drawShopRow = (
+  ctx: CanvasRenderingContext2D, row: ShopRow,
+  owned: boolean, equipped: boolean, affordable: boolean,
+): void => {
+  const b = BATS[row.bat];
+  const r = row.h * 0.22;
+
+  ctx.save();
+  roundRect(ctx, row.x, row.y, row.w, row.h, r);
+  ctx.fillStyle = equipped ? 'rgba(38,58,92,0.94)'
+    : owned ? 'rgba(20,30,50,0.86)' : 'rgba(14,20,34,0.80)';
+  ctx.fill();
+  ctx.strokeStyle = equipped ? 'rgba(255,215,106,0.95)'
+    : owned ? 'rgba(120,146,186,0.45)'
+      : affordable ? 'rgba(143,227,255,0.45)' : 'rgba(80,94,118,0.30)';
+  ctx.lineWidth = equipped ? 3 : 1.5;
+  ctx.stroke();
+  roundRect(ctx, row.x, row.y, row.w, row.h, r);
+  ctx.clip();
+
+  const pad = row.h * 0.22;
+  ctx.textAlign = 'left';
+  ctx.globalAlpha = owned || affordable ? 1 : 0.55;
+
+  ctx.font = `800 ${row.h * 0.255}px ${FONT}`;
+  ctx.fillStyle = equipped ? '#ffd76a' : '#ffffff';
+  ctx.fillText(b.name, row.x + pad, row.y + row.h * 0.32);
+
+  ctx.font = `500 ${row.h * 0.145}px ${FONT}`;
+  ctx.fillStyle = 'rgba(168,188,216,0.85)';
+  for (const [i, line] of wrap(ctx, b.note, row.w - pad * 2 - row.w * 0.22, 2).entries()) {
+    ctx.fillText(line, row.x + pad, row.y + row.h * (0.53 + i * 0.17));
+  }
+
+  // traits
+  let tx = row.x + pad;
+  const ts = row.h * 0.155;
+  tx += trait(ctx, tx, row.y + row.h * 0.90, ts, '飛距離', b.exit, '');
+  tx += trait(ctx, tx, row.y + row.h * 0.90, ts, 'ミート', b.meet, '');
+  trait(ctx, tx, row.y + row.h * 0.90, ts, 'PT', b.points, '');
+
+  // status, right-aligned
+  ctx.textAlign = 'right';
+  const rx = row.x + row.w - pad;
+  if (equipped) {
+    ctx.font = `800 ${row.h * 0.20}px ${FONT}`;
+    ctx.fillStyle = '#ffd76a';
+    ctx.fillText('使用中', rx, row.y + row.h * 0.42);
+  } else if (owned) {
+    ctx.font = `800 ${row.h * 0.20}px ${FONT}`;
+    ctx.fillStyle = '#9fe3a6';
+    ctx.fillText('タップで装備', rx, row.y + row.h * 0.42);
+  } else {
+    ctx.font = `800 ${row.h * 0.26}px ${FONT}`;
+    ctx.fillStyle = affordable ? '#8fe3ff' : 'rgba(150,166,192,0.8)';
+    ctx.fillText(`${b.price.toLocaleString()} PT`, rx, row.y + row.h * 0.38);
+    ctx.font = `600 ${row.h * 0.155}px ${FONT}`;
+    ctx.fillStyle = affordable ? 'rgba(200,230,255,0.9)' : 'rgba(150,166,192,0.6)';
+    ctx.fillText(affordable ? 'タップで購入' : 'ポイント不足', rx, row.y + row.h * 0.60);
+  }
+  ctx.restore();
+  ctx.textAlign = 'left';
+};
+
+export const drawShop = (
+  ctx: CanvasRenderingContext2D,
+  view: Viewport,
+  insets: Insets,
+  save: { points: number; bats: readonly BatId[]; equipped: BatId },
+  notice: string,
+): void => {
+  const g = ctx.createLinearGradient(0, 0, 0, view.height);
+  g.addColorStop(0, '#07101c');
+  g.addColorStop(0.6, '#0d1a2e');
+  g.addColorStop(1, '#060a14');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, view.width, view.height);
+
+  ctx.textAlign = 'center';
+  ctx.font = `800 ${view.width * 0.062}px ${FONT}`;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('バット工房', view.width / 2, insets.top + view.height * 0.070);
+
+  ctx.font = `600 ${view.width * 0.034}px ${FONT}`;
+  ctx.fillStyle = 'rgba(160,182,214,0.9)';
+  ctx.fillText('所持ポイント', view.width / 2, insets.top + view.height * 0.104);
+  ctx.font = `800 ${view.width * 0.072}px ${FONT}`;
+  ctx.fillStyle = '#ffd76a';
+  ctx.fillText(`${save.points.toLocaleString()} PT`, view.width / 2, insets.top + view.height * 0.148);
+
+  if (notice) {
+    ctx.font = `700 ${view.width * 0.032}px ${FONT}`;
+    ctx.fillStyle = '#9fe3a6';
+    ctx.fillText(notice, view.width / 2, insets.top + view.height * 0.172);
+  }
+
+  for (const row of shopRows(view, insets)) {
+    drawShopRow(
+      ctx, row,
+      save.bats.includes(row.bat),
+      save.equipped === row.bat,
+      save.points >= BATS[row.bat].price);
+  }
+
+  const back = shopBackBox(view, insets);
+  roundRect(ctx, back.x, back.y, back.w, back.h, back.h / 2);
+  ctx.fillStyle = 'rgba(26,38,60,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(130,156,196,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.font = `800 ${view.width * 0.036}px ${FONT}`;
+  ctx.fillStyle = '#e6eefb';
+  ctx.fillText('もどる', back.x + back.w / 2, back.y + back.h * 0.66);
+  ctx.textAlign = 'left';
 };

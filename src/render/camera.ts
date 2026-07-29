@@ -161,12 +161,26 @@ export const ease = (t: number): number => {
  * The numbers came out of scripts/camera-check.ts, not out of arithmetic by hand.
  */
 export const PITCH_CAMERA: Camera = {
-  // eye.x is left of the plate so the zone sits RIGHT of frame centre, leaving
-  // the lower-left quadrant free for the batter's back. Tuned in the browser.
-  eye: vec(-0.064, 1.46, -3.95),
-  target: vec(0.02, 0.27, 5.20),
+  // Measured against real Homerun Battle 2 footage rather than guessed
+  // (docs/REFERENCE-HB2.md 3-1). Three numbers matter and all three were wrong:
+  //
+  //   height  — the reference camera is LOW, roughly chest height, so the
+  //             outfield wall sits near the middle of frame. Ours looked down
+  //             from above with the wall at 17% and a large empty green middle,
+  //             which is most of what made the composition feel unrelated.
+  //   hfov    — the reference is very wide (both foul poles are in frame at
+  //             once, so about 90 degrees in landscape). Ours was 15.2, a
+  //             telephoto crop of the same geometry.
+  //   pitch   — level, not tilted down. A level camera puts the wall at the
+  //             horizon and the plate at the bottom edge, which is the framing.
+  //
+  // 34 degrees is the portrait compromise: a 90-degree horizontal angle would
+  // need a 120-degree vertical one on a 9:20 screen. At 34 the strike zone is
+  // about 27% of the width, which is close to what the reference gives.
+  eye: vec(-0.10, 1.30, -2.60),
+  target: vec(-0.10, 1.30, 9.00),
   vfov: 26,
-  hfov: 15.2,
+  hfov: 34,
 };
 
 /**
@@ -240,22 +254,27 @@ export const shakeCamera = (camera: Camera, s: Shake): Camera => {
 // the cut sequence
 // ---------------------------------------------------------------------------
 
-/** How long the swing sprites hold the frame after contact [s]. */
-export const CUT_SWING_END = 0.30;
-/** How long the pull-back from the swing view to the flight view takes [s]. */
-export const CUT_PULLBACK_END = 0.62;
+/** How long the pitch camera holds after contact [s]. */
+export const CUT_HOLD_END = 0.16;
+/** How long the pull-back to the flight view takes [s]. */
+export const CUT_PULLBACK_END = 0.55;
 
 /**
  * Camera for a struck ball, t seconds after contact.
  *
- * Three beats: the swing frames from the side, a pull-back, then the follow.
- * Keeping this here rather than in main.ts means tests can assert the cut.
+ * It stays where it was and then pulls back. It used to cut to SWING_CAMERA on
+ * the first-base side for 0.3 s so the five side-on swing sprites could play,
+ * and that cut is what produced the worst bug in the build: the batter appeared
+ * on one side of the plate during the pitch and the other side at contact, so he
+ * read as standing in the left-handed box and then teleporting into the
+ * right-handed one. The reference game never leaves the pitch camera during a
+ * swing (docs/REFERENCE-HB2.md 3-1), and neither does this now.
  */
 export const cameraAfterContact = (t: number, ball: Vec3): Camera => {
-  if (t <= CUT_SWING_END) return SWING_CAMERA;
+  if (t <= CUT_HOLD_END) return PITCH_CAMERA;
   if (t >= CUT_PULLBACK_END) return followCamera(ball);
-  const f = ease((t - CUT_SWING_END) / (CUT_PULLBACK_END - CUT_SWING_END));
-  return lerpCamera(SWING_CAMERA, followCamera(ball), f);
+  const f = ease((t - CUT_HOLD_END) / (CUT_PULLBACK_END - CUT_HOLD_END));
+  return lerpCamera(PITCH_CAMERA, followCamera(ball), f);
 };
 
 export { scale };

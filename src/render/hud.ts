@@ -239,6 +239,7 @@ const drawResult = (
 
 const drawRoundOver = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, best: number,
+  banked: number, wallet: number,
 ): void => {
   if (state.phase !== 'roundOver') return;
   const round = state.round;
@@ -280,10 +281,21 @@ const drawRoundOver = (
     ctx.fillText(`自己ベスト ${best}`, cx, y);
   }
 
-  y += view.width * 0.13;
+  // Points banked. This is the bridge to the bat shop, so it is stated plainly
+  // and separately from the score: the multiplier applies to points, not score.
+  y += view.width * 0.095;
+  ctx.font = `800 ${view.width * 0.052}px ${FONT}`;
+  ctx.fillStyle = '#8fe3ff';
+  ctx.fillText(`+${banked.toLocaleString()} PT`, cx, y);
+  y += view.width * 0.052;
+  ctx.font = `600 ${view.width * 0.032}px ${FONT}`;
+  ctx.fillStyle = 'rgba(170,192,222,0.9)';
+  ctx.fillText(`所持 ${wallet.toLocaleString()} PT`, cx, y);
+
+  y += view.width * 0.10;
   ctx.font = `700 ${view.width * 0.042}px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.fillText('タップでもう一度', cx, y);
+  ctx.fillText('タップで選手選択へ', cx, y);
   ctx.textAlign = 'left';
 };
 
@@ -309,11 +321,13 @@ export const drawHud = (
   view: Viewport,
   insets: Insets,
   best: number,
+  banked: number,
+  wallet: number,
 ): void => {
   drawTopBar(ctx, state, view, insets);
   drawPitchChip(ctx, state, view, insets);
   drawTimingBar(ctx, state, view, insets);
   drawResult(ctx, state, view, insets);
   drawPlayerChip(ctx, state, view, insets);
-  drawRoundOver(ctx, state, view, best);
+  drawRoundOver(ctx, state, view, best, banked, wallet);
 };

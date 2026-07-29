@@ -414,16 +414,65 @@ const drawPoles = (ctx: CanvasRenderingContext2D, p: Projector, flash: number): 
 };
 
 /**
- * The pitcher, as an articulated stick figure with volume.
+ * The pitcher, as an articulated silhouette.
  *
  * There is no pitcher art (docs/SPEC.md 2-4) and none can be fetched
- * (PROMPT.md 1), so the figure is jointed and drawn with round caps. The first
- * version was a rectangle with a stick arm and read as a scarecrow; what fixes
- * it is not detail but PROPORTION and a pose that changes — a head at 1/7.5 of
- * height, a stride, and an arm that travels from behind the body to release.
+ * (PROMPT.md 1), so the figure is jointed and drawn from primitives. Two
+ * rewrites got here and both failures are worth recording, because they were
+ * failures of PROPORTION rather than of detail:
  *
- * `windup` runs 0 (set) to 1 (release).
+ *   1. A rectangle torso with a stick arm swung out sideways at release. A
+ *      pitcher at release has the arm coming toward the viewer, so on screen it
+ *      must shorten; extending it sideways read as a scarecrow.
+ *   2. The torso was drawn as a 0.62-body-width line and the arms as 0.24, so
+ *      at the size this figure actually appears (about 220 px tall) the arms
+ *      never emerged from the torso silhouette at all. The delivery was
+ *      invisible, and the head merged into the shoulders into one lump.
+ *
+ * So: a narrow tapered torso, a head with a neck gap, and arm keyframes that are
+ * required to put the hand clearly OUTSIDE the torso — or clearly above the head
+ * — at every moment of the delivery. Readability at 220 px is the constraint
+ * that decides every number here.
+ *
+ * `windup` runs 0 (set) through 0.82 (release, hand high on the third-base side)
+ * to 1 (follow-through, arm across the body).
  */
+
+/**
+ * Hand position through the delivery: [windup, x, y] in units of h * 0.33,
+ * measured from the throwing shoulder, +x frame-right and +y down.
+ *
+ * The order matters and the obvious order is wrong. An arm that goes straight
+ * from "at the chest" to "out to the side" spends most of the delivery held
+ * horizontally, which reads as a T-pose scarecrow — the exact complaint this
+ * is the second attempt at. A real delivery drops the hand DOWN and BEHIND the
+ * hip first, then swings it up past the shoulder, so the arm is only briefly
+ * near horizontal and is descending or climbing the rest of the time.
+ */
+const ARM_PATH: readonly (readonly [number, number, number])[] = [
+  [0.00, -0.18, 0.34],   // set: hands together at the chest
+  [0.22, -0.42, 0.90],   // hand drops down behind the hip
+  [0.45, -0.82, 0.34],   // swings back, still below the shoulder
+  [0.62, -0.72, -0.52],  // elbow up, hand climbing
+  [0.78, -0.26, -1.05],  // over the top, hand above the head
+  [0.88, -0.10, -0.78],  // release
+  [1.00, 0.45, 0.32],    // follow-through, down across the body
+];
+
+const handAt = (whip: number): { x: number; y: number } => {
+  for (let i = 1; i < ARM_PATH.length; i++) {
+    const a = ARM_PATH[i - 1];
+    const b = ARM_PATH[i];
+    if (!a || !b) continue;
+    if (whip <= b[0] || i === ARM_PATH.length - 1) {
+      const span = b[0] - a[0];
+      const f = span <= 0 ? 0 : Math.min(1, Math.max(0, (whip - a[0]) / span));
+      return { x: a[1] + (b[1] - a[1]) * f, y: a[2] + (b[2] - a[2]) * f };
+    }
+  }
+  return { x: ARM_PATH[0]?.[1] ?? 0, y: ARM_PATH[0]?.[2] ?? 0 };
+};
+
 export const drawPitcher = (
   ctx: CanvasRenderingContext2D, p: Projector, windup: number,
 ): void => {
@@ -432,81 +481,114 @@ export const drawPitcher = (
   if (!ground || !crown) return;
   const h = ground.y - crown.y;
   if (h < 12) return;
-  const w = h * 0.26;
   const x = ground.x;
   const y = ground.y;
 
   const t = Math.min(1, Math.max(0, windup));
-  // ease: slow gather, fast whip
+  // slow gather, fast whip
   const whip = t < 0.55 ? (t / 0.55) * 0.30 : 0.30 + ((t - 0.55) / 0.45) ** 0.65 * 0.70;
 
+  const SKIN = '#101a2c';
   const hipY = y - h * 0.47;
-  const shoulderY = y - h * 0.76;
-  const headY = y - h * 0.885;
-  const drift = whip * w * 0.55;          // the body moves toward the plate
-  const hipX = x + drift;
-  const shoulderX = x + drift * 1.25;
+  const shoulderY = y - h * 0.78;
+  const headY = y - h * 0.905;
+  const headR = h * 0.072;
+  // the body carries toward the plate; on screen that is a small lean
+  const lean = whip * h * 0.075;
+  const hipX = x + lean * 0.6;
+  const shoulderX = x + lean;
 
   ctx.save();
-  ctx.fillStyle = '#101a2c';
-  ctx.strokeStyle = '#101a2c';
+  ctx.fillStyle = SKIN;
+  ctx.strokeStyle = SKIN;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // back leg: planted, pushing
-  ctx.lineWidth = w * 0.34;
-  ctx.beginPath();
-  ctx.moveTo(hipX, hipY);
-  ctx.lineTo(x - w * 0.10 - whip * w * 0.35, y - h * 0.22);
-  ctx.lineTo(x - w * 0.28 - whip * w * 0.7, y);
-  ctx.stroke();
+  const limb = (
+    from: { x: number; y: number }, via: { x: number; y: number },
+    to: { x: number; y: number }, width: number,
+  ): void => {
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(via.x, via.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  };
 
-  // front leg: lifts, then strides out toward the plate
+  // back leg (his right, our left): planted and pushing
+  const backFoot = { x: x - h * 0.10 - whip * h * 0.10, y };
+  limb(
+    { x: hipX, y: hipY },
+    { x: x - h * 0.055 - whip * h * 0.05, y: y - h * 0.24 },
+    backFoot, h * 0.062);
+
+  // front leg (his left, our right): lifts, then strides toward the plate
   const lift = Math.sin(Math.min(1, t / 0.55) * Math.PI) * (1 - whip * 0.7);
-  const kneeY = hipY - h * 0.16 * lift + h * 0.14 * whip;
-  const footY = y - h * 0.42 * lift;
-  ctx.beginPath();
-  ctx.moveTo(hipX, hipY);
-  ctx.lineTo(hipX + w * (0.18 + 0.35 * whip), kneeY);
-  ctx.lineTo(hipX + w * (0.30 + 1.05 * whip), footY);
-  ctx.stroke();
+  limb(
+    { x: hipX, y: hipY },
+    { x: hipX + h * (0.05 + 0.06 * whip), y: hipY - h * 0.13 * lift + h * 0.11 * whip },
+    { x: hipX + h * (0.07 + 0.20 * whip), y: y - h * 0.40 * lift },
+    h * 0.062);
 
-  // torso: hips to shoulders, with a bit of width
-  ctx.lineWidth = w * 0.62;
+  // torso: a tapered quad, narrow enough that the arms clear it
+  const hipHalf = h * 0.055;
+  // the shoulders start closed (nearly side-on) and open square to the plate,
+  // which on screen is simply the torso getting wider
+  const shoulderHalf = h * (0.048 + 0.036 * whip);
   ctx.beginPath();
-  ctx.moveTo(hipX, hipY);
-  ctx.lineTo(shoulderX, shoulderY);
-  ctx.stroke();
-
-  // glove arm, tucking in as the throwing arm comes over
-  ctx.lineWidth = w * 0.26;
-  ctx.beginPath();
-  ctx.moveTo(shoulderX, shoulderY);
-  ctx.lineTo(shoulderX - w * (0.55 - 0.25 * whip), shoulderY + h * (0.02 + 0.10 * whip));
-  ctx.stroke();
-
-  // throwing arm: from behind the head, over the top, down to release
-  const angle = -1.95 + whip * 2.35;
-  const elbowA = angle - 0.55;
-  const upper = w * 0.72;
-  const fore = w * 0.78;
-  const elbowX = shoulderX + Math.cos(elbowA) * upper;
-  const elbowY = shoulderY + Math.sin(elbowA) * upper;
-  ctx.beginPath();
-  ctx.moveTo(shoulderX, shoulderY);
-  ctx.lineTo(elbowX, elbowY);
-  ctx.lineTo(elbowX + Math.cos(angle) * fore, elbowY + Math.sin(angle) * fore);
-  ctx.stroke();
-
-  // head
-  ctx.beginPath();
-  ctx.arc(shoulderX + drift * 0.3, headY, h * 0.068, 0, Math.PI * 2);
+  ctx.moveTo(hipX - hipHalf, hipY);
+  ctx.lineTo(hipX + hipHalf, hipY);
+  ctx.lineTo(shoulderX + shoulderHalf, shoulderY);
+  ctx.lineTo(shoulderX - shoulderHalf, shoulderY);
+  ctx.closePath();
   ctx.fill();
-  // cap brim, pointing at the batter
-  ctx.lineWidth = h * 0.030;
+
+  // Glove arm (his left, our right). Deliberately SHORT: through the stride it
+  // points at the plate, which is straight at the camera, so it foreshortens
+  // almost to nothing. Drawing it extended sideways was half of what made the
+  // figure a T-pose.
+  const gloveOut = 0.11 - 0.05 * whip;
+  const glove = {
+    x: shoulderX + h * gloveOut,
+    y: shoulderY + h * (0.03 + 0.11 * whip),
+  };
+  limb(
+    { x: shoulderX + shoulderHalf * 0.6, y: shoulderY + h * 0.008 },
+    { x: shoulderX + h * (gloveOut * 0.9), y: shoulderY + h * 0.06 },
+    glove, h * 0.045);
+
+  // throwing arm (his right, our left)
+  const hand = handAt(whip);
+  const handX = shoulderX + hand.x * h * 0.33;
+  const handY = shoulderY + hand.y * h * 0.33;
+  const dx = handX - shoulderX;
+  const dy = handY - shoulderY;
+  const reach = Math.hypot(dx, dy) || 1;
+  // elbow pushed off the shoulder-hand line so the arm reads as jointed
+  const bend = h * 0.055 * (1 - whip * 0.35);
+  limb(
+    { x: shoulderX - shoulderHalf * 0.6, y: shoulderY + h * 0.008 },
+    {
+      x: shoulderX + dx * 0.5 - (dy / reach) * bend,
+      y: shoulderY + dy * 0.5 + (dx / reach) * bend,
+    },
+    { x: handX, y: handY }, h * 0.048);
+
+  // head, with a neck gap so it does not merge into the shoulders
   ctx.beginPath();
-  ctx.moveTo(shoulderX + drift * 0.3, headY - h * 0.035);
-  ctx.lineTo(shoulderX + drift * 0.3 - h * 0.075, headY - h * 0.020);
+  ctx.arc(shoulderX + lean * 0.25, headY, headR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = h * 0.028;
+  ctx.beginPath();
+  ctx.moveTo(shoulderX + lean * 0.25, headY + headR * 0.6);
+  ctx.lineTo(shoulderX, shoulderY - h * 0.005);
+  ctx.stroke();
+  // cap brim, pointing at the plate
+  ctx.lineWidth = h * 0.024;
+  ctx.beginPath();
+  ctx.moveTo(shoulderX + lean * 0.25 - headR * 0.2, headY - headR * 0.45);
+  ctx.lineTo(shoulderX + lean * 0.25 - headR * 1.5, headY - headR * 0.15);
   ctx.stroke();
 
   ctx.restore();

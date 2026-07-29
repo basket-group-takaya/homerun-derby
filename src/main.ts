@@ -10,10 +10,14 @@
  *   windup (0.55 s, presentation only)
  *     -> ball in flight, behind-the-plate camera, meet cursor live
  *     -> swing: contact resolved in core; hit stop freezes the whole loop
- *     -> 0.30 s cut to the side view where the five swing sprites play
- *     -> pull back, then follow the ball
+ *     -> the pitch camera HOLDS for 0.16 s while the bat sweeps through
+ *     -> pull back from the same position, then follow the ball
  *     -> landing: slow motion, dust, crowd
  *     -> result card, then the next pitch arrives on its own
+ *
+ * The camera never crosses the plate. It used to cut to a side view so the five
+ * side-on swing sprites could play, and the batter then read as changing
+ * batter's box at the moment of contact.
  *
  * The hit stop is implemented by simply not sending ticks. That works only
  * because step() is pure — there is no hidden animation clock inside the core to
@@ -30,12 +34,19 @@ import { vec } from './core/vec.js';
 import type { Camera, Viewport } from './render/camera.js';
 import {
   makeProjector, PITCH_CAMERA, cameraAfterContact, shakeCamera,
+  CUT_HOLD_END, CUT_PULLBACK_END,
 } from './render/camera.js';
 import type { Sprites, ViewMode } from './render/scene.js';
 import { drawScene } from './render/scene.js';
 import { drawHud } from './render/hud.js';
 import type { CutIn, Faces } from './render/screens.js';
-import { cardBoxes, drawCutIn, drawTitle, modeBox, soundBox } from './render/screens.js';
+import {
+  cardBoxes, drawCutIn, drawShop, drawTitle, modeBox, shopBackBox, shopOpenBox,
+  shopRows, soundBox,
+} from './render/screens.js';
+import { BATS, bankedPoints } from './core/bats.js';
+import type { Save } from './storage.js';
+import { loadSave, storeSave } from './storage.js';
 import { createFx } from './render/fx.js';
 import { createSfx } from './audio/sfx.js';
 
@@ -52,7 +63,6 @@ const MAX_ASPECT = 2.30;
 const WINDUP_SECONDS = 0.55;
 const RESULT_PAUSE = 1.25;
 const SWING_ARC_SECONDS = 0.22;
-const BEST_KEY = 'bhrd.best.v1';
 
 const POSES = ['stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4', 'back'] as const;
 
@@ -91,12 +101,22 @@ const resize = (): void => {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = Math.round(view.width * dpr);
   canvas.height = Math.round(view.height * dpr);
-  canvas.style.width = `${cssW}px`;
-  canvas.style.height = `${cssH}px`;
+
+  // Fit, do not stretch. The logical aspect is clamped to [1.30, 2.30] so that
+  // the composition stays sane on any handset; when the real window falls
+  // outside that range, filling it would squash the scene non-uniformly — which
+  // is exactly what a desktop landscape window used to do. Letterbox instead.
+  const fit = Math.min(cssW / view.width, cssH / view.height);
+  const drawW = view.width * fit;
+  const drawH = view.height * fit;
+  canvas.style.width = `${drawW}px`;
+  canvas.style.height = `${drawH}px`;
+  canvas.style.marginLeft = `${(cssW - drawW) / 2}px`;
+  canvas.style.marginTop = `${(cssH - drawH) / 2}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // CSS reports the notch in CSS pixels; convert to our logical units
-  const scale = view.width / cssW;
+  const scale = fit === 0 ? 1 : 1 / fit;
   insets = {
     top: readInset('paddingTop') * scale,
     bottom: readInset('paddingBottom') * scale,
@@ -141,7 +161,14 @@ const send = (c: Command): void => { queue.push(c); };
 const fx = createFx();
 const sfx = createSfx();
 
-let best = Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
+/**
+ * The save. src/storage.ts owns every localStorage access and every one of them
+ * is wrapped: in iOS Safari private browsing, TOUCHING localStorage throws, and
+ * a throw during module evaluation aborts the whole ES module and leaves a black
+ * canvas with nothing on screen to explain it.
+ */
+let save: Save = loadSave();
+let best = save.bestScore;
 
 /** Presentation-only timers, all in seconds. */
 let windup = 0;
@@ -150,9 +177,12 @@ let swingArc = -1;
 let scoreboardFlash = 0;
 let poleFlash = 0;
 let landed = false;
+let lastBanked = 0;
 
-type UiScreen = 'title' | 'playing';
+type UiScreen = 'title' | 'shop' | 'playing';
 let uiScreen: UiScreen = 'title';
+let shopNotice = '';
+let shopNoticeLeft = 0;
 let selected: PlayerId = 'takaya';
 let roundMode: RoundMode = 'classic';
 let cutIn: CutIn | null = null;
@@ -263,17 +293,34 @@ const goFullscreen = (): void => {
   try {
     if (!document.fullscreenElement) {
       const request = el.requestFullscreen?.bind(el) ?? el.webkitRequestFullscreen?.bind(el);
-      void request?.call(el);
+      // The rejection MUST be swallowed here, not left to a global handler.
+      // Chrome rejects with "Permissions check failed" inside an extension
+      // context and iOS Safari has no API at all; either way it is harmless, and
+      // an unhandled rejection tripped the boot-error overlay and hid the game
+      // behind a false "failed to start" card.
+      const promise = request?.call(el) as Promise<void> | undefined;
+      if (promise && typeof promise.catch === 'function') promise.catch(() => { /* denied */ });
     }
   } catch { /* unsupported */ }
   const orientation = screen.orientation as ScreenOrientation & {
     lock?: (o: string) => Promise<void>;
   };
-  try { void orientation.lock?.('portrait')?.catch(() => { /* not allowed */ }); } catch { /* ditto */ }
+  try {
+    const locked = orientation.lock?.('portrait');
+    if (locked && typeof locked.catch === 'function') locked.catch(() => { /* denied */ });
+  } catch { /* no ScreenOrientation on iOS Safari */ }
 };
 
 /** Tap handling on the title screen: pick a mode, or pick a player and play. */
 const titleTap = (px: number, py: number): void => {
+  const shopBtn = shopOpenBox(view, insets);
+  if (px >= shopBtn.x && px <= shopBtn.x + shopBtn.w
+      && py >= shopBtn.y && py <= shopBtn.y + shopBtn.h) {
+    uiScreen = 'shop';
+    shopNotice = '';
+    sfx.blip(520, 0.10);
+    return;
+  }
   const sb = soundBox(view, insets);
   if (px >= sb.x && px <= sb.x + sb.w && py >= sb.y && py <= sb.y + sb.h) {
     sfx.setMuted(!sfx.isMuted());
@@ -289,7 +336,7 @@ const titleTap = (px: number, py: number): void => {
   for (const box of cardBoxes(view, insets)) {
     if (px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h) {
       selected = box.player;
-      state = initialState(Date.now() & 0x7fffffff, selected, roundMode);
+      state = initialState(Date.now() & 0x7fffffff, selected, roundMode, save.equipped);
       fx.reset();
       cutIn = null;
       previousEvent = null;
@@ -305,6 +352,55 @@ const titleTap = (px: number, py: number): void => {
   }
 };
 
+/**
+ * Shop taps: buy what is not owned and affordable, equip what is owned.
+ *
+ * Buying and equipping are the same gesture on purpose. A separate "equip" step
+ * after a purchase is a screen nobody wants to read, and there is no case where
+ * a player buys a bat and does not want to try it.
+ */
+const shopTap = (px: number, py: number): void => {
+  const back = shopBackBox(view, insets);
+  if (px >= back.x && px <= back.x + back.w && py >= back.y && py <= back.y + back.h) {
+    uiScreen = 'title';
+    sfx.blip(420, 0.10);
+    return;
+  }
+  for (const row of shopRows(view, insets)) {
+    if (px < row.x || px > row.x + row.w || py < row.y || py > row.y + row.h) continue;
+    const spec = BATS[row.bat];
+    if (save.bats.includes(row.bat)) {
+      if (save.equipped !== row.bat) {
+        save = { ...save, equipped: row.bat };
+        storeSave(save);
+        state = step(state, { kind: 'equipBat', bat: row.bat });
+        shopNotice = `${spec.name} を装備しました`;
+        shopNoticeLeft = 2.2;
+        sfx.blip(900, 0.12);
+      }
+      return;
+    }
+    if (save.points >= spec.price) {
+      save = {
+        ...save,
+        points: save.points - spec.price,
+        bats: [...save.bats, row.bat],
+        equipped: row.bat,
+      };
+      storeSave(save);
+      state = step(state, { kind: 'equipBat', bat: row.bat });
+      shopNotice = `${spec.name} を購入して装備しました`;
+      shopNoticeLeft = 2.6;
+      sfx.fanfare();
+    } else {
+      shopNotice = `ポイントが ${(spec.price - save.points).toLocaleString()} PT 足りません`;
+      shopNoticeLeft = 2.2;
+      sfx.blip(220, 0.08);
+    }
+    return;
+  }
+};
+
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   sfx.unlock();
@@ -312,6 +408,11 @@ canvas.addEventListener('pointerdown', (e) => {
   if (uiScreen === 'title') {
     const p = toLogical(e);
     titleTap(p.x, p.y);
+    return;
+  }
+  if (uiScreen === 'shop') {
+    const p = toLogical(e);
+    shopTap(p.x, p.y);
     return;
   }
   if (aim === null) {
@@ -515,9 +616,23 @@ const reactToTransitions = (): void => {
   }
 
   if (previousPhase !== 'roundOver' && state.phase === 'roundOver') {
+    // Bank the round. The points multiplier applies HERE, to the banked total,
+    // and never to the round score on screen — otherwise the score a player
+    // compares against their best would depend on which bat they held.
+    const gained = bankedPoints(state.round.score, BATS[state.bat]);
+    lastBanked = gained;
+    save = {
+      ...save,
+      points: save.points + gained,
+      earned: save.earned + gained,
+      rounds: save.rounds + 1,
+      homeRuns: save.homeRuns + state.round.homeRuns,
+      bestScore: Math.max(save.bestScore, state.round.score),
+      bestDistance: Math.max(save.bestDistance, Math.round(state.round.longest)),
+    };
+    storeSave(save);
     if (state.round.score > best) {
       best = state.round.score;
-      try { window.localStorage.setItem(BEST_KEY, String(best)); } catch { /* private mode */ }
       sfx.fanfare();
       showCutIn('bust', '自己ベスト更新', '143,227,255', 2.2);
     }
@@ -535,12 +650,17 @@ const reactToTransitions = (): void => {
 // ---------------------------------------------------------------------------
 
 const viewMode = (): ViewMode => {
-  if (state.phase !== 'flight' && !(state.swing?.field && state.phase !== 'pitching')) {
-    return 'pitch';
-  }
   const t = sinceContact();
   if (t === null) return 'pitch';
-  return t <= 0.30 ? 'swing' : 'flight';
+  return t <= CUT_HOLD_END ? 'pitch' : 'flight';
+};
+
+/** The batter fades out as the camera pulls back, rather than popping. */
+const batterFade = (): number => {
+  const t = sinceContact();
+  if (t === null) return 1;
+  if (t <= CUT_HOLD_END) return 1;
+  return Math.max(0, 1 - ((t - CUT_HOLD_END) / (CUT_PULLBACK_END - CUT_HOLD_END)) * 2.2);
 };
 
 const sinceContact = (): number | null => {
@@ -570,11 +690,18 @@ const cameraNow = (): Camera => {
  *
  *   ?auto         swing at the optimal instant
  *   ?auto=-2      swing two frames early
+ *   ?dev          expose the hooks WITHOUT auto-swinging, for UI checks
  *   ?p=yuki       start as a different player
+ *
+ * hrdStep() exists because requestAnimationFrame is frozen in a background tab.
+ * That is correct behaviour for a game and completely defeats screenshot-based
+ * verification, which cannot hold window focus — a tap changes the state and the
+ * screen simply never repaints.
  */
 const params = new URLSearchParams(window.location.search);
 const autoParam = params.get('auto');
 const autoSwing = params.has('auto');
+const devHooks = autoSwing || params.has('dev');
 const autoOffsetFrames = Number.parseFloat(autoParam ?? '0') || 0;
 const startPlayer = params.get('p');
 if (startPlayer && (PLAYER_IDS as readonly string[]).includes(startPlayer)) {
@@ -585,7 +712,7 @@ if (autoSwing) {
   selected = state.player;
 }
 
-if (autoSwing) {
+if (devHooks) {
   // a read-only window onto the loop, so a browser session can assert on the
   // same numbers the tests do. Only ever attached under ?auto.
   (window as unknown as Record<string, unknown>).hrd = (): unknown => ({
@@ -622,7 +749,11 @@ const advance = (dt: number): void => {
     cutIn.life += dt;
     if (cutIn.life >= cutIn.maxLife) cutIn = null;
   }
-  if (uiScreen === 'title') return;
+  if (shopNoticeLeft > 0) {
+    shopNoticeLeft -= dt;
+    if (shopNoticeLeft <= 0) shopNotice = '';
+  }
+  if (uiScreen === 'title' || uiScreen === 'shop') return;
   scoreboardFlash = Math.max(0, scoreboardFlash - dt * 1.2);
   poleFlash = Math.max(0, poleFlash - dt * 1.2);
   if (swingArc >= 0) {
@@ -661,7 +792,12 @@ const advance = (dt: number): void => {
 
 const render = (): void => {
   if (uiScreen === 'title') {
-    drawTitle(ctx, view, insets, faces, selected, roundMode, best, sfx.isMuted());
+    drawTitle(ctx, view, insets, faces, selected, roundMode, best, sfx.isMuted(),
+      save.points, BATS[save.equipped].name);
+    return;
+  }
+  if (uiScreen === 'shop') {
+    drawShop(ctx, view, insets, save, shopNotice);
     return;
   }
 
@@ -672,13 +808,19 @@ const render = (): void => {
   drawScene(ctx, projector, state, loadSprites(state.player), view, {
     mode,
     sinceContact: sinceContact(),
-    windup: state.phase === 'pitching' ? 1 : Math.min(1, windup / WINDUP_SECONDS),
+    // 0 -> 0.82 while winding up, so the release pose lands exactly when the
+    // ball appears; then 0.82 -> 1 over the first quarter second of the pitch so
+    // the follow-through plays out instead of snapping
+    windup: state.phase === 'pitching'
+      ? Math.min(1, 0.82 + state.time * 0.72)
+      : Math.min(0.82, (windup / WINDUP_SECONDS) * 0.82),
     swingArc,
     stadium: { scoreboardFlash, poleFlash },
+    batterFade: batterFade(),
     hot: streak >= 2 ? Math.min(1, (streak - 1) / 2) : 0,
   });
   fx.drawWorld(ctx, projector);
-  drawHud(ctx, state, view, insets, best);
+  drawHud(ctx, state, view, insets, best, lastBanked, save.points);
   if (cutIn) drawCutIn(ctx, view, faces, cutIn);
   fx.drawScreen(ctx, projector, view);
 };
@@ -700,7 +842,7 @@ const frame = (now: number): void => {
   requestAnimationFrame(frame);
 };
 
-if (autoSwing) {
+if (devHooks) {
   /**
    * Advance the game by hand, N ticks at a time, and redraw.
    *
@@ -718,4 +860,6 @@ if (autoSwing) {
 }
 
 send({ kind: 'moveCursor', x: 0, y: (ZONE_BOTTOM + ZONE_TOP) / 2 });
+// tells the boot watchdog in index.html that the loop actually started
+(window as unknown as Record<string, unknown>).__hrdBooted = true;
 requestAnimationFrame(frame);

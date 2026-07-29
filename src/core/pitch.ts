@@ -53,8 +53,17 @@ export const PITCHES: Readonly<Record<PitchType, PitchSpec>> = {
   curve: { kmh: 124.4, rpm: 2582, axis: vec(-0.62, -0.55, 0) },
 };
 
-/** Where the pitcher lets go, for a right-hander. */
-export const RELEASE_POINT: Vec3 = vec(0.35, 1.85, RELEASE_DISTANCE);
+/**
+ * Where the pitcher lets go, for a right-hander.
+ *
+ * x is NEGATIVE. Facing the plate the pitcher looks along -z, and for someone
+ * facing that way the right hand is on the -x side — the third-base side, the
+ * same side the right-handed batter stands on. It was +0.35 through M2, which is
+ * a left-hander's release point, and nobody could see the mistake until the
+ * pitcher silhouette became detailed enough to show which arm the ball leaves.
+ * The spin table above is right-handed (arm side = -x), so this now agrees.
+ */
+export const RELEASE_POINT: Vec3 = vec(-0.35, 1.85, RELEASE_DISTANCE);
 
 export type Pitch = {
   readonly type: PitchType;

@@ -24,6 +24,8 @@ import type { FieldResult } from './stadium.js';
 import { judgeBattedBall } from './stadium.js';
 import type { Round, RoundEvent, RoundMode } from './round.js';
 import { applySwing, applyTake, newRound } from './round.js';
+import type { BatId } from './bats.js';
+import { BATS, DEFAULT_BAT } from './bats.js';
 
 export type Phase = 'ready' | 'pitching' | 'flight' | 'result' | 'roundOver';
 
@@ -57,6 +59,8 @@ export type GameState = {
   readonly round: Round;
   /** What the last completed swing amounted to; drives the HUD and effects. */
   readonly lastEvent: RoundEvent | null;
+  /** Equipped bat. Chosen before the round and fixed for its duration. */
+  readonly bat: BatId;
 };
 
 export type Command =
@@ -65,7 +69,8 @@ export type Command =
   | { readonly kind: 'swing' }
   | { readonly kind: 'pitch' }
   | { readonly kind: 'selectPlayer'; readonly player: PlayerId }
-  | { readonly kind: 'newRound'; readonly mode?: RoundMode };
+  | { readonly kind: 'newRound'; readonly mode?: RoundMode }
+  | { readonly kind: 'equipBat'; readonly bat: BatId };
 
 /** Cursor travel is limited to a little outside the zone. */
 const CURSOR_X = PLATE_HALF_WIDTH + 0.16;
@@ -74,6 +79,7 @@ const CURSOR_Y_HI = ZONE_TOP + 0.18;
 
 export const initialState = (
   seed: number, player: PlayerId = 'takaya', mode: RoundMode = 'classic',
+  bat: BatId = DEFAULT_BAT,
 ): GameState => ({
   rng: seedRng(seed),
   phase: 'ready',
@@ -89,6 +95,7 @@ export const initialState = (
   pitchCount: 0,
   round: newRound(mode, PLAYERS[player].skill === 'tenacity'),
   lastEvent: null,
+  bat,
 });
 
 /** Where the pitch is at time t, interpolated from the integrated samples. */
@@ -141,6 +148,7 @@ const doSwing = (state: GameState): GameState => {
     // the bat arrives T_SWING after the input, so the error is measured there
     timingError: state.time + T_SWING - state.flight.crossTime,
     whiffStreak: state.whiffStreak,
+    bat: BATS[state.bat],
   });
   const multiplier = state.pitch?.multiplier ?? 1;
 
@@ -216,12 +224,20 @@ export const step = (state: GameState, cmd: Command): GameState => {
   switch (cmd.kind) {
     case 'newRound':
       return initialState(
-        state.rng.s0 + state.pitchCount + 1, state.player, cmd.mode ?? state.round.mode);
+        state.rng.s0 + state.pitchCount + 1, state.player,
+        cmd.mode ?? state.round.mode, state.bat);
+
+    case 'equipBat':
+      // only between rounds: swapping mid-round would change the physics of a
+      // round already in progress and make its score meaningless
+      return state.phase === 'pitching' || state.phase === 'flight'
+        ? state
+        : { ...state, bat: cmd.bat };
 
     case 'selectPlayer':
       return state.phase === 'pitching' || state.phase === 'flight'
         ? state
-        : initialState(state.rng.s0, cmd.player, state.round.mode);
+        : initialState(state.rng.s0, cmd.player, state.round.mode, state.bat);
 
     case 'moveCursor':
       return {
@@ -280,4 +296,4 @@ export const step = (state: GameState, cmd: Command): GameState => {
 
 /** Convenience for the renderer: the catch radius in play right now. */
 export const currentCatchRadius = (state: GameState): number =>
-  catchRadius(PLAYERS[state.player], state.whiffStreak);
+  catchRadius(PLAYERS[state.player], state.whiffStreak, BATS[state.bat]);
