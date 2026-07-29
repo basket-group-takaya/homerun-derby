@@ -1,0 +1,16 @@
+{
+  "name": "basket-home-run-derby",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BASKET HOME RUN DERBY - browser home run derby. TypeScript + Canvas 2D, zero runtime dependencies.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test \"dist/tests/*.test.js\"",
+    "extract": "python tools/extract_sprites.py"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

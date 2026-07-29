@@ -1,0 +1,12 @@
+{
+  "$comment": "Static server for the sprite check page and, later, the game itself. No dependencies: Python's stdlib http.server serves the repo root.",
+  "servers": [
+    {
+      "name": "static",
+      "command": "python -m http.server 8123 --bind 127.0.0.1",
+      "cwd": ".",
+      "port": 8123,
+      "url": "http://127.0.0.1:8123/tools/sprite-check.html"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+drafts/
+*.log
+
+# 生成物。tools/extract_sprites.py で assets/src から再生成できる。
+# 元素材（assets/src）は追跡する。
+assets/player/*/
+assets/face/
+
+# ただし接地基準点は成果物として追跡する（M2/M4 で目視補正する対象）
+!assets/player/anchors.json
