@@ -1,8 +1,22 @@
 {
-  "$comment": "Static server for the sprite check page and, later, the game itself. No dependencies: Python's stdlib http.server serves the repo root.",
+  "$comment": "No dependencies: Python's stdlib http.server serves the repo root. 'game' is the one to use. 'lan' binds every interface so a phone on the same network can reach it — over plain HTTP there is no PWA install and no fullscreen, but the game plays inside the browser. 'sprites' is the M0 check page.",
   "servers": [
     {
-      "name": "static",
+      "name": "game",
+      "command": "python -m http.server 8123 --bind 127.0.0.1",
+      "cwd": ".",
+      "port": 8123,
+      "url": "http://127.0.0.1:8123/index.html"
+    },
+    {
+      "name": "lan",
+      "command": "python -m http.server 8123 --bind 0.0.0.0",
+      "cwd": ".",
+      "port": 8123,
+      "url": "http://127.0.0.1:8123/index.html"
+    },
+    {
+      "name": "sprites",
       "command": "python -m http.server 8123 --bind 127.0.0.1",
       "cwd": ".",
       "port": 8123,
