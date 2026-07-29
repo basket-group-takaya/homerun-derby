@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BASKET HOME RUN DERBY — M2</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: #0d1017; color: #dfe6f2;
+    font: 14px/1.6 "Segoe UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  }
+  body { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .04em; color: #9fb2cc; font-weight: 600; }
+  h1 b { color: #ffd76a; }
+  #game {
+    width: min(100%, 1280px); aspect-ratio: 16 / 9;
+    background: #10141c; border-radius: 10px; display: block;
+    cursor: crosshair; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .keys { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center;
+          color: #8ea2bd; font-size: 13px; }
+  .keys span { white-space: nowrap; }
+  kbd {
+    background: #1c2230; border: 1px solid #2c3548; border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; font: inherit; font-size: 12px; color: #cfe0f5;
+  }
+  .note { max-width: 1280px; color: #7c8ba3; font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <h1>BASKET HOME RUN DERBY <b>— M2: 1球打てる（素朴な描画）</b></h1>
+  <canvas id="game"></canvas>
+  <div class="keys">
+    <span><kbd>Enter</kbd> / <kbd>右クリック</kbd> 投球</span>
+    <span><kbd>クリック</kbd> / <kbd>Space</kbd> スイング</span>
+    <span><kbd>マウス</kbd> / <kbd>WASD</kbd> ミートカーソル</span>
+    <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 選手変更（勇樹 / 貴也 / 敦司）</span>
+  </div>
+  <p class="note">
+    M2 の目的は「手触りの判定」だけです。スタジアム・投手・観客はすべて仮の描画で、
+    ラウンド進行もスコアもまだありません（M3 以降）。
+    画面下のバーは、いまスイングするとタイミング誤差がどこに落ちるかを示します。
+    黄色がジャストミート域、水色が当たる範囲です。
+  </p>
+  <script type="module" src="dist/src/main.js"></script>
+</body>
+</html>

@@ -106,8 +106,15 @@ export const resolveContact = (input: ContactInput): Contact => {
   });
   if (e > radius || Math.abs(t) > T_MISS) return miss();
 
-  const qMeet = clamp(1 - e / radius, 0, 1);
-  const qTime = clamp(1 - Math.abs(t) / T_MISS, 0, 1);
+  // Quadratic falloff, not linear. Linear made the sweet spot a cliff: 33 ms of
+  // timing error (2 frames at 60fps) cost a right-handed A-power hitter 30 m of
+  // carry, so anything short of frame-perfect was a ground out. Squaring the
+  // normalised error keeps the centre forgiving and still collapses at the edge.
+  // Both terms remain monotonically decreasing, so PROMPT.md 3-4 still holds.
+  const meetError = clamp(e / radius, 0, 1);
+  const timeError = clamp(Math.abs(t) / T_MISS, 0, 1);
+  const qMeet = 1 - meetError * meetError;
+  const qTime = 1 - timeError * timeError;
   const quality = Math.pow(qMeet, Q_MEET_EXP) * Math.pow(qTime, Q_TIME_EXP);
 
   const maxExit = MAX_EXIT_KMH[player.power] / 3.6;
