@@ -218,8 +218,17 @@ const toLogical = (e: PointerEvent): { x: number; y: number } => {
 type Touch = { id: number; x: number; y: number; startedAt: number; moved: number };
 let aim: Touch | null = null;
 
-const TAP_MOVE = 12;
-const TAP_MS = 240;
+/**
+ * What separates a tap (swing) from a drag (aim).
+ *
+ * In LOGICAL pixels, and the logical width is 720 while a phone is around 390
+ * CSS pixels wide — so a threshold of 12 logical px is 6.5 real pixels, tighter
+ * than a finger can hold still. At that value a deliberate tap registered as a
+ * drag and the swing never fired. 26 logical px is about 14 real pixels, which
+ * is the usual touch-slop figure.
+ */
+const TAP_MOVE = 26;
+const TAP_MS = 300;
 
 const doSwing = (): void => {
   sfx.unlock();
