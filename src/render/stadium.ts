@@ -378,10 +378,12 @@ const drawFence = (ctx: CanvasRenderingContext2D, p: Projector): void => {
   ] as const) {
     const s = p.project(onFence(a, FENCE_HEIGHT * 0.52, -0.05));
     if (!s) continue;
-    const size = Math.max(6, p.scaleAt(s.depth) * 1.5);
+    const size = Math.max(6, p.scaleAt(s.depth) * 1.25);
     if (size < 8) continue;
     ctx.font = `800 ${size}px "Segoe UI", sans-serif`;
-    ctx.fillStyle = 'rgba(240,244,250,0.82)';
+    // painted on a wall in the distance, not a HUD element: it must not compete
+    // with the ball for attention
+    ctx.fillStyle = 'rgba(228,236,246,0.55)';
     ctx.fillText(String(m), s.x, s.y + size * 0.35);
   }
   ctx.textAlign = 'left';

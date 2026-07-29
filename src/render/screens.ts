@@ -79,6 +79,21 @@ export const cardBoxes = (view: Viewport, insets: Insets): readonly CardBox[] =>
   }));
 };
 
+/**
+ * The sound toggle, top-right of the title screen.
+ *
+ * Only on the title screen: an always-visible mute button on the playing HUD is
+ * one more thing between a thumb and the swing, and this is a game you play in
+ * short rounds and come back to the title between.
+ */
+export const soundBox = (view: Viewport, insets: Insets): {
+  x: number; y: number; w: number; h: number;
+} => {
+  const w = view.width * 0.20;
+  const h = view.width * 0.085;
+  return { x: view.width - w - view.width * 0.045, y: insets.top + view.width * 0.030, w, h };
+};
+
 /** The mode toggle at the foot of the select screen. */
 export const modeBox = (view: Viewport, insets: Insets): {
   x: number; y: number; w: number; h: number;
@@ -223,6 +238,7 @@ export const drawTitle = (
   selected: PlayerId,
   mode: RoundMode,
   best: number,
+  muted: boolean,
 ): void => {
   const g = ctx.createLinearGradient(0, 0, 0, view.height);
   g.addColorStop(0, '#070c18');
@@ -245,6 +261,18 @@ export const drawTitle = (
   ctx.fillText(
     best > 0 ? `自己ベスト ${best}　　選手を選んでください` : '選手を選んでください',
     cx, insets.top + view.height * 0.175);
+
+  // sound toggle
+  const sb = soundBox(view, insets);
+  roundRect(ctx, sb.x, sb.y, sb.w, sb.h, sb.h / 2);
+  ctx.fillStyle = muted ? 'rgba(24,32,48,0.9)' : 'rgba(46,64,96,0.9)';
+  ctx.fill();
+  ctx.strokeStyle = muted ? 'rgba(110,128,158,0.4)' : 'rgba(255,215,106,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.font = `700 ${sb.h * 0.42}px ${FONT}`;
+  ctx.fillStyle = muted ? 'rgba(150,166,192,0.85)' : '#ffd76a';
+  ctx.fillText(muted ? '🔇 OFF' : '🔊 ON', sb.x + sb.w / 2, sb.y + sb.h * 0.64);
 
   for (const box of cardBoxes(view, insets)) {
     drawCard(ctx, box, faces, box.player === selected);
@@ -309,8 +337,11 @@ export const drawCutIn = (
   const ease = (t: number): number => 1 - Math.pow(1 - t, 3);
   const slide = (1 - ease(enter)) * -view.width * 0.9 + ease(exit) * view.width * 1.1;
 
-  const h = view.height * 0.26;
-  const y = view.height * 0.40;
+  // Below the telop bands (0.28-0.50), above the result card. An earlier
+  // version sat at 0.40 and the distance, the points and the caption all
+  // printed on top of each other.
+  const h = view.height * 0.215;
+  const y = view.height * 0.585;
   const skew = view.width * 0.10;
 
   ctx.save();

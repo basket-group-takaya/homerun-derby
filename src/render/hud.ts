@@ -105,14 +105,23 @@ const drawTopBar = (
   }
 };
 
-/** The pitch chip: type, and the bonus multiplier if this ball carries one. */
+/**
+ * The pitch chip: type, and the bonus multiplier if this ball carries one.
+ *
+ * Sits low, just above the timing bar. It used to sit under the score, where it
+ * landed on top of the pitcher and the outfield wall's distance marking — and
+ * where it competed with the ball for the eye at exactly the wrong moment.
+ */
 const drawPitchChip = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, insets: Insets,
 ): void => {
   const pitch = state.pitch;
-  if (!pitch || state.phase === 'ready' || state.phase === 'roundOver') return;
+  // hidden once the swing has resolved: the result card lives in this space
+  if (!pitch || state.phase === 'ready' || state.phase === 'result'
+    || state.phase === 'roundOver') return;
   const pad = view.width * 0.045;
-  const y = insets.top + view.width * 0.30;
+  const y = view.height - insets.bottom - view.width
+    * (pitch.multiplier > 1 ? 0.335 : 0.205);
 
   ctx.textAlign = 'center';
   const label = PITCH_LABEL[pitch.type];

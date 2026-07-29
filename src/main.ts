@@ -35,7 +35,7 @@ import type { Sprites, ViewMode } from './render/scene.js';
 import { drawScene } from './render/scene.js';
 import { drawHud } from './render/hud.js';
 import type { CutIn, Faces } from './render/screens.js';
-import { cardBoxes, drawCutIn, drawTitle, modeBox } from './render/screens.js';
+import { cardBoxes, drawCutIn, drawTitle, modeBox, soundBox } from './render/screens.js';
 import { createFx } from './render/fx.js';
 import { createSfx } from './audio/sfx.js';
 
@@ -265,6 +265,12 @@ const goFullscreen = (): void => {
 
 /** Tap handling on the title screen: pick a mode, or pick a player and play. */
 const titleTap = (px: number, py: number): void => {
+  const sb = soundBox(view, insets);
+  if (px >= sb.x && px <= sb.x + sb.w && py >= sb.y && py <= sb.y + sb.h) {
+    sfx.setMuted(!sfx.isMuted());
+    if (!sfx.isMuted()) sfx.blip(720, 0.10);
+    return;
+  }
   const m = modeBox(view, insets);
   if (px >= m.x && px <= m.x + m.w && py >= m.y && py <= m.y + m.h) {
     roundMode = px < m.x + m.w / 2 ? 'classic' : 'arcade';
@@ -445,8 +451,8 @@ const announceLanding = (e: RoundEvent): void => {
     // Cut-ins are reserved for home runs and personal bests. Firing one on
     // every swing would make the thing that says "that mattered" say nothing.
     if (e.titanic) showCutIn('bust', '特大弾！', '255,150,60', 2.0);
-    else if (state.round.streak >= 3) showCutIn('smile', `${state.round.streak} 連発`, '255,215,106', 1.7);
-    else showCutIn('smile', 'ホームラン', '255,215,106', 1.5);
+    else if (state.round.streak >= 3) showCutIn('bust', `${state.round.streak} 連発`, '255,215,106', 1.7);
+    else showCutIn('bust', 'ホームラン', '255,215,106', 1.5);
     fx.telop(`${e.distance.toFixed(1)} m`, {
       at: landing, size: view.width * 0.085, colour: '255,236,180', life: 1.8, rise: 80,
     });
@@ -504,7 +510,7 @@ const reactToTransitions = (): void => {
       best = state.round.score;
       try { window.localStorage.setItem(BEST_KEY, String(best)); } catch { /* private mode */ }
       sfx.fanfare();
-      showCutIn('relief', '自己ベスト更新', '143,227,255', 2.2);
+      showCutIn('bust', '自己ベスト更新', '143,227,255', 2.2);
     }
     sfx.crowd(0.6, 2.6);
   }
@@ -646,7 +652,7 @@ const advance = (dt: number): void => {
 
 const render = (): void => {
   if (uiScreen === 'title') {
-    drawTitle(ctx, view, insets, faces, selected, roundMode, best);
+    drawTitle(ctx, view, insets, faces, selected, roundMode, best, sfx.isMuted());
     return;
   }
 
