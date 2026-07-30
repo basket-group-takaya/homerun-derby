@@ -92,12 +92,33 @@ BODY='{"source":{"branch":"gh-pages","path":"/"}}'
 printf '%s' "$BODY" | gh api -X POST "repos/$OWNER/$REPO/pages" --input - >/dev/null 2>&1 \
   || printf '%s' "$BODY" | gh api -X PUT "repos/$OWNER/$REPO/pages" --input - >/dev/null
 
-echo "==> waiting for the build"
+# Ask for a build explicitly, and wait for the build OF THE COMMIT WE JUST PUSHED.
+# Pushing master a moment ago queues a build FROM MASTER, and switching the
+# source afterwards does not re-queue one. The first deployment waited for that
+# build, saw "built", reported success — and served a site whose own entry point
+# was a 404, because master does not carry dist/.
+WANT="$(git ls-remote "https://github.com/$OWNER/$REPO.git" gh-pages | cut -f1)"
+gh api -X POST "repos/$OWNER/$REPO/pages/builds" >/dev/null
+
+echo "==> waiting for the build of gh-pages"
 for _ in $(seq 1 40); do
-  STATE="$(gh api "repos/$OWNER/$REPO/pages" --jq .status 2>/dev/null || echo '')"
-  if [ "$STATE" = "built" ]; then break; fi
+  READ="$(gh api "repos/$OWNER/$REPO/pages/builds/latest" --jq '.status + " " + .commit' 2>/dev/null || echo '')"
+  if [ "$READ" = "built $WANT" ]; then break; fi
   sleep 6
 done
+
+# "Deployed" and "works" are different claims, and only one of them can be
+# checked from here. This checks the other.
+echo "==> checking the site serves its own entry point"
+URL="https://$OWNER.github.io/$REPO"
+for f in "" "dist/src/main.js" "sw.js" "manifest.webmanifest" "assets/logo_back.png"; do
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' "$URL/$f")"
+  if [ "$CODE" != "200" ]; then
+    echo "    $URL/$f returned $CODE — the site is incomplete" >&2
+    exit 1
+  fi
+done
+echo "    entry point, worker, manifest and art all 200"
 
 echo
 echo "Done:"
