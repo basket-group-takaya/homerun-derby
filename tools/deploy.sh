@@ -54,12 +54,21 @@ fi
 
 echo "==> turn on Pages"
 OWNER="$(gh api user --jq .login)"
-gh api -X POST "repos/$OWNER/$REPO/pages" \
-  -f "source[branch]=$(git rev-parse --abbrev-ref HEAD)" \
-  -f "source[path]=/" >/dev/null 2>&1 || \
-gh api -X PUT "repos/$OWNER/$REPO/pages" \
-  -f "source[branch]=$(git rev-parse --abbrev-ref HEAD)" \
-  -f "source[path]=/" >/dev/null
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BODY="{\"source\":{\"branch\":\"$BRANCH\",\"path\":\"/\"}}"
+
+# A JSON body rather than -f fields: the API wants `source` as a nested object,
+# and form fields cannot express that. POST creates the site, PUT updates one
+# that is already there.
+printf '%s' "$BODY" | gh api -X POST "repos/$OWNER/$REPO/pages" --input - >/dev/null 2>&1 \
+  || printf '%s' "$BODY" | gh api -X PUT "repos/$OWNER/$REPO/pages" --input - >/dev/null
+
+echo "==> waiting for the first build (a minute or two)"
+for _ in $(seq 1 30); do
+  STATE="$(gh api "repos/$OWNER/$REPO/pages" --jq .status 2>/dev/null || echo '')"
+  if [ "$STATE" = "built" ]; then break; fi
+  sleep 6
+done
 
 echo
 echo "Done. The URL takes a minute or two to go live:"
