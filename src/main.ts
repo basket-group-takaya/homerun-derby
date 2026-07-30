@@ -1093,8 +1093,12 @@ const runAutoSwing = (): void => {
 let previous = 0;
 let accumulator = 0;
 
+/** Presentation clock: real seconds, unaffected by hit stop or pauses. */
+let clock = 0;
+
 const advance = (dt: number): void => {
   // presentation timers run on real time even while the core is frozen
+  clock += dt;
   fx.update(dt);
   if (cutIn) {
     cutIn.life += dt;
@@ -1197,6 +1201,7 @@ const render = (): void => {
     batterName: PLAYERS[state.player].roman,
     timeOfDay: save.timeOfDay,
     logo: logoBack,
+    clock,
 
   });
   fx.drawWorld(ctx, projector);

@@ -20,6 +20,7 @@ import { ballAt, battedBallAt } from '../core/game.js';
 import type { Projector, Viewport } from './camera.js';
 import type { StadiumFlags } from './stadium.js';
 import type { TimeOfDay } from './stadium.js';
+import { drawFlags } from './flag.js';
 import { drawStadium } from './stadium.js';
 import { setFigureLight } from './figure.js';
 import { drawPitcher } from './pitcher.js';
@@ -53,7 +54,14 @@ export type Presentation = {
   /** Name lettered across his shoulders, and the company logo above it. */
   readonly batterName: string;
   readonly logo: HTMLImageElement | null;
-
+  /**
+   * Seconds since the page loaded, for anything that moves on its own.
+   *
+   * Presentation time, not game time: it keeps running while the core is frozen
+   * by a hit stop. A flag that stops mid-ripple every time the bat connects
+   * would announce that the world is a backdrop.
+   */
+  readonly clock: number;
 };
 
 const ZONE_MID_Y = (ZONE_BOTTOM + ZONE_TOP) / 2;
@@ -211,6 +219,8 @@ export const drawScene = (
 ): void => {
   setFigureLight(show.timeOfDay === 'day');
   drawStadium(ctx, p, view, show.stadium, show.timeOfDay);
+  // After the stadium, because the stadium is a cached still and this is not.
+  drawFlags(ctx, p, show.logo, show.clock, show.timeOfDay === 'day');
 
   if (show.mode !== 'flight') drawPitcher(ctx, p, show.windup);
 

@@ -50,6 +50,7 @@ const PRECACHE = [
   './dist/src/render/batter.js',
   './dist/src/render/camera.js',
   './dist/src/render/figure.js',
+  './dist/src/render/flag.js',
   './dist/src/render/fx.js',
   './dist/src/render/hud.js',
   './dist/src/render/pitcher.js',
