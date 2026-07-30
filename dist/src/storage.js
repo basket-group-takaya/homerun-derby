@@ -1,0 +1,144 @@
+/**
+ * Persistence. The only module allowed to touch localStorage.
+ *
+ * PROMPT.md 2 puts this outside src/core, and core never calls it — the game
+ * simulates identically whether or not anything was ever saved.
+ *
+ * Every access is wrapped. In iOS Safari private browsing, READING
+ * window.localStorage throws, not just writing to it, and an unguarded read at
+ * module scope aborts the whole ES module and leaves a black screen with no
+ * explanation. That was the most likely cause of the phone build not opening.
+ *
+ * THE SAVE IS PER PLAYER. Each of the three keeps his own experience, his own
+ * bat and his own opponent, because abilities now start different and grow —
+ * 「パワプロのサクセスのような感じ」 — so choosing 敦司 opens 敦司's save rather
+ * than reskinning 貴也's. Records stay global: a best score is a best score.
+ */
+import { BAT_IDS, DEFAULT_BAT, isBatId } from './core/bats.js';
+import { DEFAULT_PITCHER, isPitcherId, unlockedPitchers } from './core/pitchers.js';
+import { PLAYER_IDS } from './core/constants.js';
+import { levelOf, unlockedBats } from './core/level.js';
+const KEY = 'bhrd.save.v1';
+const freshPlayer = () => ({
+    xp: 0, bat: DEFAULT_BAT, pitcher: DEFAULT_PITCHER,
+});
+export const emptySave = () => ({
+    players: {
+        yuki: freshPlayer(), takaya: freshPlayer(), atsushi: freshPlayer(),
+    },
+    last: 'takaya',
+    timeOfDay: 'night',
+    bestScore: 0,
+    bestDistance: 0,
+    rounds: 0,
+    homeRuns: 0,
+});
+const num = (v, fallback = 0) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;
+const isPlayerId = (v) => typeof v === 'string' && PLAYER_IDS.includes(v);
+/**
+ * Read one character's slot, repairing anything that does not fit.
+ *
+ * The bat and the opponent are checked against the LEVEL, not taken on trust.
+ * Both are functions of experience, so experience is the truth and the stored
+ * ids are a cache: a save written before either existed still resolves, and a
+ * hand-edited one cannot equip a bat that has not been earned.
+ */
+const parsePlayer = (v) => {
+    if (typeof v !== 'object' || v === null)
+        return freshPlayer();
+    const o = v;
+    const xp = num(o.xp);
+    const level = levelOf(xp);
+    const bats = unlockedBats(level);
+    const wantedBat = isBatId(o.bat) ? o.bat : DEFAULT_BAT;
+    const bat = bats.includes(wantedBat) ? wantedBat : DEFAULT_BAT;
+    const pitchers = unlockedPitchers(level);
+    const wantedPitcher = isPitcherId(o.pitcher) ? o.pitcher : DEFAULT_PITCHER;
+    const pitcher = pitchers.includes(wantedPitcher) ? wantedPitcher : DEFAULT_PITCHER;
+    return { xp, bat, pitcher };
+};
+/**
+ * Parse a save, repairing anything that does not fit.
+ *
+ * Deliberately total: a corrupt or hand-edited save must degrade to a playable
+ * state rather than throw, because a throw here means the game will not start
+ * and the player has no way to clear it from inside the app.
+ *
+ * It also reads the OLD single-career shape, where one `points` total and one
+ * equipped bat were shared by all three. That total is given to 貴也, who was
+ * the default batter — splitting it three ways would invent progress nobody
+ * made, and dropping it would throw away somebody's evening.
+ */
+export const parseSave = (raw) => {
+    const base = emptySave();
+    if (!raw)
+        return base;
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return base;
+    }
+    if (typeof parsed !== 'object' || parsed === null)
+        return base;
+    const o = parsed;
+    const stored = typeof o.players === 'object' && o.players !== null
+        ? o.players
+        : null;
+    const legacyXp = num(o.points);
+    const legacyBat = isBatId(o.equipped) ? o.equipped : DEFAULT_BAT;
+    const players = {
+        yuki: parsePlayer(stored?.yuki),
+        takaya: stored
+            ? parsePlayer(stored.takaya)
+            : parsePlayer({ xp: legacyXp, bat: legacyBat, pitcher: DEFAULT_PITCHER }),
+        atsushi: parsePlayer(stored?.atsushi),
+    };
+    return {
+        players,
+        last: isPlayerId(o.last) ? o.last : base.last,
+        timeOfDay: o.timeOfDay === 'day' ? 'day' : 'night',
+        bestScore: num(o.bestScore),
+        bestDistance: num(o.bestDistance),
+        rounds: num(o.rounds),
+        homeRuns: num(o.homeRuns),
+    };
+};
+/** Replace one character's slot, leaving the others alone. */
+export const withPlayer = (save, id, patch) => ({
+    ...save,
+    players: { ...save.players, [id]: { ...save.players[id], ...patch } },
+    last: id,
+});
+/** Every bat this character has earned. */
+export const batsFor = (save, id) => {
+    const owned = unlockedBats(levelOf(save.players[id].xp));
+    return BAT_IDS.filter((b) => owned.includes(b));
+};
+export const loadSave = () => {
+    try {
+        return parseSave(window.localStorage.getItem(KEY));
+    }
+    catch {
+        return emptySave();
+    }
+};
+export const storeSave = (save) => {
+    try {
+        window.localStorage.setItem(KEY, JSON.stringify(save));
+    }
+    catch { /* private mode */ }
+};
+/** Is localStorage usable at all? The title screen says so if it is not. */
+export const storageAvailable = () => {
+    try {
+        window.localStorage.setItem('bhrd.probe', '1');
+        window.localStorage.removeItem('bhrd.probe');
+        return true;
+    }
+    catch {
+        return false;
+    }
+};
+//# sourceMappingURL=storage.js.map

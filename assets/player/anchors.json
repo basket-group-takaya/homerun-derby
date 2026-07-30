@@ -1,0 +1,86 @@
+{
+  "yuki/stance": [
+    283,
+    764
+  ],
+  "yuki/swing_0": [
+    112,
+    524
+  ],
+  "yuki/swing_1": [
+    47,
+    477
+  ],
+  "yuki/swing_2": [
+    181,
+    457
+  ],
+  "yuki/swing_3": [
+    89,
+    472
+  ],
+  "yuki/swing_4": [
+    93,
+    531
+  ],
+  "yuki/back": [
+    132,
+    771
+  ],
+  "takaya/stance": [
+    257,
+    786
+  ],
+  "takaya/swing_0": [
+    25,
+    511
+  ],
+  "takaya/swing_1": [
+    90,
+    483
+  ],
+  "takaya/swing_2": [
+    152,
+    426
+  ],
+  "takaya/swing_3": [
+    161,
+    418
+  ],
+  "takaya/swing_4": [
+    75,
+    436
+  ],
+  "takaya/back": [
+    194,
+    784
+  ],
+  "atsushi/stance": [
+    226,
+    862
+  ],
+  "atsushi/swing_0": [
+    106,
+    514
+  ],
+  "atsushi/swing_1": [
+    51,
+    503
+  ],
+  "atsushi/swing_2": [
+    120,
+    452
+  ],
+  "atsushi/swing_3": [
+    139,
+    469
+  ],
+  "atsushi/swing_4": [
+    180,
+    472
+  ],
+  "atsushi/back": [
+    134,
+    842
+  ]
+}
