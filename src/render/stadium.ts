@@ -287,8 +287,25 @@ const drawSkyline = (ctx: CanvasRenderingContext2D, p: Projector): void => {
       onFence(right, b.height, b.depth),
       onFence(left, b.height, b.depth),
     ];
-    const tone = Math.round(28 * b.shade);
-    fill(ctx, p, face, `rgb(${tone + 6},${tone + 10},${tone + 20})`);
+    /*
+     * Aerial perspective: the further a building is, the more of the sky's
+     * colour sits in front of it.
+     *
+     * This is a real effect and it is doing real work here. Without it the
+     * city is a flat cut-out, and in daylight it was worse than flat — the
+     * buildings were carrying a tone written for a night sky, so they came out
+     * near-black against a bright blue and read as holes punched in the sky.
+     * Fading toward the sky separates the near buildings from the far ones and
+     * costs one lerp.
+     */
+    const base = LIGHTS_ON ? 30 : 140;
+    const tone = base * (0.55 + 0.45 * b.shade);
+    const haze = Math.min(0.72, (b.depth - 60) / 140) * (LIGHTS_ON ? 0.35 : 0.62);
+    const mix = (c: number, sky: number): number =>
+      Math.round(Math.max(0, Math.min(255, c + (sky - c) * haze)));
+    const sky = LIGHTS_ON ? [42, 62, 108] : [138, 182, 226];
+    fill(ctx, p, face, `rgb(${mix(tone + 6, sky[0] as number)},`
+      + `${mix(tone + 10, sky[1] as number)},${mix(tone + 20, sky[2] as number)})`);
 
     if (!LIGHTS_ON) continue;                 // daylight: no lit windows
     for (const w of b.windows) {
@@ -368,42 +385,118 @@ const drawFloodlights = (ctx: CanvasRenderingContext2D, p: Projector): void => {
   }
 };
 
+/*
+ * The scoreboard, which used to be a black rectangle with noise on it.
+ *
+ * It reads as a scoreboard because of its STRUCTURE, not its text. At 133 m the
+ * board is about 210 pixels wide on a phone, so a five-by-seven character matrix
+ * would fit three letters — and a grid of meaningless bulbs is just a texture.
+ * What the eye actually recognises from the stands is the layout: a title band,
+ * two team rows ruled into innings, a totals block ruled off at the right, and a
+ * lamp cluster. Draw those and it is a scoreboard at any resolution.
+ *
+ * The cell contents are deliberately abstract blocks rather than real digits.
+ * The live score is already on the HUD, in a size that can be read; duplicating
+ * it here in an unreadable size would trade atmosphere for nothing, and it would
+ * also make the board change on every hit, which is exactly the wrong thing to
+ * put inside a cached layer.
+ */
+const BOARD_SEED = 4147;
+
 const drawScoreboard = (
   ctx: CanvasRenderingContext2D, p: Projector, lit: boolean,
 ): void => {
   const hw = SCOREBOARD_HALF_WIDTH;
+  const bottom = SCOREBOARD_BOTTOM;
+  const height = SCOREBOARD_TOP - SCOREBOARD_BOTTOM;
+
+  /** Board-local coordinates: u across from the left, v up from the bottom. */
+  const at = (u: number, v: number, out = 0.05): Vec3 =>
+    vec(-hw + 2 * hw * u, bottom + height * v, SCOREBOARD_Z - out);
+  const panel = (u0: number, v0: number, u1: number, v1: number, out = 0.05): Vec3[] =>
+    [at(u0, v0, out), at(u1, v0, out), at(u1, v1, out), at(u0, v1, out)];
+
   const face: Vec3[] = [
-    vec(-hw, SCOREBOARD_BOTTOM, SCOREBOARD_Z),
-    vec(hw, SCOREBOARD_BOTTOM, SCOREBOARD_Z),
+    vec(-hw, bottom, SCOREBOARD_Z),
+    vec(hw, bottom, SCOREBOARD_Z),
     vec(hw, SCOREBOARD_TOP, SCOREBOARD_Z),
     vec(-hw, SCOREBOARD_TOP, SCOREBOARD_Z),
   ];
-  // legs
   for (const x of [-hw + 2, hw - 2]) {
-    stroke(ctx, p, [vec(x, 0, SCOREBOARD_Z), vec(x, SCOREBOARD_BOTTOM, SCOREBOARD_Z)], '#0d1522', 6);
+    stroke(ctx, p, [vec(x, 0, SCOREBOARD_Z), vec(x, bottom, SCOREBOARD_Z)], '#0d1522', 6);
   }
-  fill(ctx, p, face, lit ? '#2a2410' : '#12161f');
+  fill(ctx, p, face, lit ? '#1b1a12' : '#0f131b');
   stroke(ctx, p, [...face, face[0] as Vec3], lit ? '#ffd76a' : '#39445c', 3);
 
-  // a grid of "bulbs" so it reads as a board rather than a black rectangle
-  const cols = 26;
-  const rows = 9;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = -hw + 1.0 + ((2 * hw - 2.0) * c) / (cols - 1);
-      const y = SCOREBOARD_BOTTOM + 0.9
-        + ((SCOREBOARD_TOP - SCOREBOARD_BOTTOM - 1.8) * r) / (rows - 1);
-      const s = p.project(vec(x, y, SCOREBOARD_Z - 0.05));
-      if (!s) continue;
-      const rad = p.scaleAt(s.depth) * 0.18;
-      if (rad < 0.3) continue;
-      // a fixed pattern that vaguely reads as characters
-      const on = ((r * 7 + c * 3) % 11) < 4;
-      ctx.fillStyle = lit
-        ? (on ? 'rgba(255,214,110,0.95)' : 'rgba(120,96,40,0.5)')
-        : (on ? 'rgba(150,170,200,0.5)' : 'rgba(60,72,96,0.5)');
+  const ON = lit ? 'rgba(255,214,110,0.95)' : 'rgba(150,170,200,0.62)';
+  const DIM = lit ? 'rgba(120,96,40,0.55)' : 'rgba(60,72,96,0.55)';
+  const RULE = lit ? 'rgba(255,214,110,0.30)' : 'rgba(120,140,175,0.28)';
+
+  // --- title band across the top
+  fill(ctx, p, panel(0.03, 0.80, 0.97, 0.95), lit ? '#241f10' : '#141924');
+  let seed = seedRng(BOARD_SEED);
+  const roll = (): number => {
+    const n = nextFloat(seed);
+    seed = n.rng;
+    return n.value;
+  };
+  // block "lettering": a run of narrow bars, which is what a word looks like
+  // from the far side of a stadium
+  let u = 0.06;
+  while (u < 0.92) {
+    const w = 0.012 + roll() * 0.020;
+    fill(ctx, p, panel(u, 0.835, u + w, 0.915, 0.07), ON);
+    u += w + 0.008 + (roll() < 0.18 ? 0.022 : 0);   // wider gaps = word breaks
+  }
+
+  // --- the line score: two team rows, ruled into innings, totals boxed off
+  const INNINGS = 9;
+  const nameRight = 0.22;        // where the team-name column ends
+  const totalsLeft = 0.845;      // where R/H/E begins
+  const rows: readonly [number, number][] = [[0.55, 0.75], [0.32, 0.52]];
+
+  for (const [v0, v1] of rows) {
+    fill(ctx, p, panel(0.03, v0, 0.97, v1), lit ? '#20200f' : '#111621');
+    // team name plate
+    fill(ctx, p, panel(0.045, v0 + 0.025, nameRight - 0.01, v1 - 0.025, 0.07), DIM);
+    // inning cells
+    for (let i = 0; i < INNINGS; i++) {
+      const a = nameRight + ((totalsLeft - nameRight) * i) / INNINGS;
+      const b = nameRight + ((totalsLeft - nameRight) * (i + 1)) / INNINGS;
+      stroke(ctx, p, [at(b, v0, 0.06), at(b, v1, 0.06)], RULE, 1.5);
+      // a lit block in some cells: an inning that has been played
+      if (roll() < 0.62) {
+        const cw = (b - a) * 0.34;
+        const mid = (a + b) / 2;
+        fill(ctx, p, panel(mid - cw / 2, v0 + 0.045, mid + cw / 2, v1 - 0.045, 0.07), ON);
+      }
+    }
+    // R / H / E, ruled off from the innings the way every real board does
+    stroke(ctx, p, [at(totalsLeft, v0, 0.06), at(totalsLeft, v1, 0.06)], RULE, 3);
+    for (let i = 0; i < 3; i++) {
+      const a = totalsLeft + ((0.97 - totalsLeft) * i) / 3;
+      const b = totalsLeft + ((0.97 - totalsLeft) * (i + 1)) / 3;
+      const cw = (b - a) * 0.34;
+      const mid = (a + b) / 2;
+      fill(ctx, p, panel(mid - cw / 2, v0 + 0.045, mid + cw / 2, v1 - 0.045, 0.07), ON);
+    }
+  }
+  stroke(ctx, p, [...panel(0.03, 0.32, 0.97, 0.75, 0.06),
+    at(0.03, 0.32, 0.06)], RULE, 2);
+
+  // --- bottom strip: ball / strike / out lamps, and a name plate
+  fill(ctx, p, panel(0.03, 0.06, 0.97, 0.28), lit ? '#1a1b10' : '#101520');
+  fill(ctx, p, panel(0.05, 0.10, 0.52, 0.24, 0.07), DIM);          // batter plate
+  const lamps: readonly [number, number][] = [[3, 0.205], [2, 0.155], [3, 0.105]];
+  for (const [count, v] of lamps) {
+    for (let i = 0; i < count; i++) {
+      const c = p.project(at(0.60 + i * 0.075, v, 0.09));
+      if (!c) continue;
+      const rad = p.scaleAt(c.depth) * 0.42;
+      if (rad < 0.4) continue;
+      ctx.fillStyle = i < count - 1 ? ON : DIM;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, rad, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, rad, 0, Math.PI * 2);
       ctx.fill();
     }
   }
