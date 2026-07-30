@@ -13,6 +13,7 @@ import type { Vec3 } from '../core/vec.js';
 import { vec, radians } from '../core/vec.js';
 import type { Projector, Viewport } from './camera.js';
 import { fenceDistance, POLE_POSITIONS } from '../core/stadium.js';
+import { seedRng, nextFloat } from '../core/rng.js';
 import {
   FENCE_HEIGHT, FOUL_ANGLE, MOUND_DISTANCE, POLE_TOP,
   SCOREBOARD_BOTTOM, SCOREBOARD_HALF_WIDTH, SCOREBOARD_TOP, SCOREBOARD_Z,
@@ -221,6 +222,86 @@ const drawSky = (ctx: CanvasRenderingContext2D, view: Viewport): void => {
   g.addColorStop(1, HORIZON);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, view.width, view.height);
+};
+
+/**
+ * A city behind the park.
+ *
+ * The single biggest difference between this frame and a finished baseball game
+ * is not shading, it is EMPTINESS: ours was sky, a bowl and a wall, and roughly
+ * a third of the screen had nothing in it. Real parks sit in a place. Putting
+ * buildings behind the stands costs a few dozen rectangles and gives the sky a
+ * bottom edge, which is what makes the stadium feel like it has an outside.
+ *
+ * Generated once from the seeded PRNG so the skyline is the same every frame and
+ * every session — a city that reshuffles itself between pitches is worse than no
+ * city at all.
+ */
+type Building = {
+  readonly angle: number;
+  readonly width: number;
+  readonly height: number;
+  readonly depth: number;
+  readonly shade: number;
+  readonly windows: readonly { readonly u: number; readonly v: number }[];
+};
+
+const SKYLINE: readonly Building[] = (() => {
+  let rng = seedRng(20260731);
+  const draw = (): number => {
+    const next = nextFloat(rng);
+    rng = next.rng;
+    return next.value;
+  };
+  const out: Building[] = [];
+  for (let a = -FOUL_ANGLE - 10; a <= FOUL_ANGLE + 10; a += 3.4 + draw() * 2.2) {
+    const height = FENCE_HEIGHT + 20 + draw() * 34;
+    const width = 2.6 + draw() * 3.4;
+    const windows: { u: number; v: number }[] = [];
+    const rows = Math.floor(height / 5);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < 3; c++) {
+        if (draw() < 0.42) windows.push({ u: (c + 0.5) / 3, v: (r + 0.5) / rows });
+      }
+    }
+    out.push({
+      angle: a,
+      width,
+      height,
+      depth: 62 + draw() * 46,
+      shade: 0.55 + draw() * 0.45,
+      windows,
+    });
+  }
+  return out;
+})();
+
+const drawSkyline = (ctx: CanvasRenderingContext2D, p: Projector): void => {
+  for (const b of SKYLINE) {
+    const half = (b.width / (b.depth * 0.02)) * 0.5;
+    const left = b.angle - half;
+    const right = b.angle + half;
+    const face = [
+      onFence(left, 0, b.depth),
+      onFence(right, 0, b.depth),
+      onFence(right, b.height, b.depth),
+      onFence(left, b.height, b.depth),
+    ];
+    const tone = Math.round(28 * b.shade);
+    fill(ctx, p, face, `rgb(${tone + 6},${tone + 10},${tone + 20})`);
+
+    if (!LIGHTS_ON) continue;                 // daylight: no lit windows
+    for (const w of b.windows) {
+      const a = left + (right - left) * w.u;
+      const y = b.height * w.v;
+      const q = p.project(onFence(a, y, b.depth));
+      if (!q) continue;
+      const r = p.scaleAt(q.depth) * 0.22;
+      if (r < 0.35) continue;
+      ctx.fillStyle = 'rgba(255,226,150,0.5)';
+      ctx.fillRect(q.x - r * 0.5, q.y - r * 0.6, r, r * 1.2);
+    }
+  }
 };
 
 const drawStands = (ctx: CanvasRenderingContext2D, p: Projector): void => {
@@ -460,6 +541,40 @@ const drawFence = (ctx: CanvasRenderingContext2D, p: Projector): void => {
     bottom.push(onFence(a, 0));
   }
   fill(ctx, p, [...bottom, ...[...top].reverse()], WALL);
+
+  /*
+   * Boards along the wall.
+   *
+   * Every real outfield fence has them, and they do more than decorate: a plain
+   * band of one colour gives the eye nothing to judge distance or speed against,
+   * so a ball travelling along it looks slower than it is. These are abstract
+   * colour panels — PROMPT.md 0/5 forbids real brands, and inventing fake ones
+   * that look real is the same problem wearing a hat.
+   */
+  const BOARD_COLOURS = ['#1d3f6d', '#7a2230', '#20563a', '#5a4a1c', '#2c2f52'];
+  const ADS_FROM = -FOUL_ANGLE + 3;
+  const ADS_TO = FOUL_ANGLE - 3;
+  const SPAN = 4.4;
+  let index = 0;
+  for (let a = ADS_FROM; a + SPAN <= ADS_TO; a += SPAN + 0.5) {
+    const panel = [
+      onFence(a, FENCE_HEIGHT * 0.20, -0.02),
+      onFence(a + SPAN, FENCE_HEIGHT * 0.20, -0.02),
+      onFence(a + SPAN, FENCE_HEIGHT * 0.86, -0.02),
+      onFence(a, FENCE_HEIGHT * 0.86, -0.02),
+    ];
+    fill(ctx, p, panel, BOARD_COLOURS[index % BOARD_COLOURS.length] as string);
+    // a lighter bar across each board, so they read as signs and not as holes
+    const bar = [
+      onFence(a + 0.4, FENCE_HEIGHT * 0.44, -0.03),
+      onFence(a + SPAN - 0.4, FENCE_HEIGHT * 0.44, -0.03),
+      onFence(a + SPAN - 0.4, FENCE_HEIGHT * 0.60, -0.03),
+      onFence(a + 0.4, FENCE_HEIGHT * 0.60, -0.03),
+    ];
+    fill(ctx, p, bar, 'rgba(226,236,250,0.30)');
+    index++;
+  }
+
   stroke(ctx, p, top, WALL_TOP, 4);
 
   // distance markers, painted on the wall
@@ -701,6 +816,7 @@ export const drawStadium = (
 ): void => {
   applySkin(when);
   drawSky(ctx, view);
+  drawSkyline(ctx, p);
   drawStands(ctx, p);
   drawFloodlights(ctx, p);
   drawScoreboard(ctx, p, flags.scoreboardFlash > 0);

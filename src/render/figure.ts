@@ -69,10 +69,30 @@ export const setFigureLight = (day: boolean): void => {
  */
 const WRAP = 0.45;
 
-const shade = (colour: RGB, normal: Vec3, glow: number): string => {
+/**
+ * Rim light: how much brighter a surface gets as it turns edge-on to the eye.
+ *
+ * The cheapest thing on this list that reads as "lit by a stadium rather than by
+ * a flat fill". A real figure under floodlights picks up a bright fringe wherever
+ * it curves away from the camera, because at that angle it is catching light from
+ * everywhere except in front. One dot product per face buys most of it.
+ *
+ * It is deliberately strongest at the silhouette and absent face-on, so it adds
+ * shape rather than brightness — turning it up washes the figure out instead of
+ * making it rounder, which is the failure mode to watch for.
+ */
+const RIM = 0.34;
+const RIM_POWER = 3.0;
+
+const shade = (colour: RGB, normal: Vec3, glow: number, toEye?: Vec3): string => {
   const raw = dot(normal, LIGHT);
   const lambert = Math.max(0, (raw + WRAP) / (1 + WRAP));
-  const k = Math.min(1.35, AMBIENT + DIFFUSE * lambert + glow);
+  let rim = 0;
+  if (toEye) {
+    const facing = Math.abs(dot(normal, toEye));
+    rim = RIM * Math.pow(1 - Math.min(1, facing), RIM_POWER);
+  }
+  const k = Math.min(1.45, AMBIENT + DIFFUSE * lambert + rim + glow);
   const r = Math.min(255, Math.round(colour[0] * k));
   const g = Math.min(255, Math.round(colour[1] * k));
   const b = Math.min(255, Math.round(colour[2] * k));
@@ -289,7 +309,7 @@ const centroid = (pts: readonly Vec3[]): Vec3 => {
 export const drawQuads = (
   ctx: CanvasRenderingContext2D, p: Projector, quads: readonly Quad[],
 ): void => {
-  type Ready = { readonly quad: Quad; readonly depth: number };
+  type Ready = { readonly quad: Quad; readonly depth: number; readonly toEye: Vec3 };
   const ready: Ready[] = [];
   for (const quad of quads) {
     const mid = centroid(quad.pts);
@@ -298,17 +318,18 @@ export const drawQuads = (
     if (dot(quad.normal, toFace) > -1e-4) continue;
     const depth = dot(toFace, p.forward);
     if (depth <= 0.02) continue;
-    ready.push({ quad, depth });
+    // unit vector from the face toward the eye, for the rim term
+    ready.push({ quad, depth, toEye: normalize(scale(toFace, -1)) });
   }
   ready.sort((a, b) => b.depth - a.depth);
 
-  for (const { quad } of ready) {
+  for (const { quad, toEye } of ready) {
     const poly = p.projectPolygon(quad.pts);
     if (!poly) continue;
     ctx.beginPath();
     poly.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
     ctx.closePath();
-    ctx.fillStyle = shade(quad.colour, quad.normal, quad.glow ?? 0);
+    ctx.fillStyle = shade(quad.colour, quad.normal, quad.glow ?? 0, toEye);
     ctx.fill();
     // A hairline stroke in the same colour closes the seams between adjacent
     // faces. Without it, antialiasing leaves bright cracks along every edge.
