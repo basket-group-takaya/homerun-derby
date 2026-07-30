@@ -65,6 +65,26 @@ const walk = (dir: string, out: string[] = []): string[] => {
   return out;
 };
 
+test('sw.js is valid JavaScript', () => {
+  /*
+   * The test that should have been first, and was not there at all.
+   *
+   * Every other test in this file reads sw.js as TEXT — the precache list is
+   * pulled out with a regex — so all of them passed happily while the file had
+   * a stray closing brace in it and could not be parsed at all. The service
+   * worker had not registered since that edit: not on the dev server, not on
+   * the phone, not anywhere. Offline had never worked, and the only symptom was
+   * an absence, which is the hardest thing to notice.
+   *
+   * A worker that fails to parse fails SILENTLY: register() rejects, index.html
+   * swallows the rejection because a plain-http dev server legitimately rejects
+   * too, and the game keeps working perfectly well online.
+   */
+  // new Function compiles without running, which is exactly what is wanted: the
+  // worker's body references `self` and `caches`, neither of which exists here.
+  assert.doesNotThrow(() => new Function(swText), 'sw.js does not parse');
+});
+
 test('every precached file actually exists', () => {
   // The atomic-addAll trap. One 404 here and the installed game does not start
   // off the network at all.

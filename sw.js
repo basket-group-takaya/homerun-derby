@@ -119,7 +119,6 @@ const PRECACHE = [
   './assets/player/yuki/swing_4.png',
 ];
 // <<< generated
-}
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
