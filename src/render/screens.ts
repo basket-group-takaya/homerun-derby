@@ -357,11 +357,13 @@ export const drawCutIn = (
   const ease = (t: number): number => 1 - Math.pow(1 - t, 3);
   const slide = (1 - ease(enter)) * -view.width * 0.9 + ease(exit) * view.width * 1.1;
 
-  // Below the telop bands (0.28-0.50), above the result card. An earlier
-  // version sat at 0.40 and the distance, the points and the caption all
-  // printed on top of each other.
+  // The post-landing screen has four things stacked and they must not collide:
+  //   0.28  ホームラン！        (telop)
+  //   0.36  +points             (telop)
+  //   0.52  this cut-in         (0.215 tall, so it ends at 0.735)
+  //   0.77  result card         (drawn by hud.ts)
   const h = view.height * 0.215;
-  const y = view.height * 0.585;
+  const y = view.height * 0.520;
   const skew = view.width * 0.10;
 
   ctx.save();

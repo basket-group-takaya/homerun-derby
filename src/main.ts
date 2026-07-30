@@ -551,7 +551,7 @@ const announceLanding = (e: RoundEvent): void => {
   if (e.target) {
     if (e.target === 'scoreboard') scoreboardFlash = 1; else poleFlash = 1;
     fx.telop(TARGET_LABEL[e.target], {
-      size: view.width * 0.075, colour: '255,214,110', life: 1.5, rise: 40, band: 0.56,
+      size: view.width * 0.075, colour: '255,214,110', life: 1.5, rise: 40, band: 0.44,
     });
     sfx.fanfare();
   }
@@ -567,11 +567,11 @@ const announceLanding = (e: RoundEvent): void => {
       at: landing, size: view.width * 0.085, colour: '255,236,180', life: 1.8, rise: 80,
     });
     fx.telop(e.titanic ? '特大ホームラン！' : 'ホームラン！', {
-      size: view.width * 0.095, colour: '255,215,106', life: 1.6, band: 0.40,
+      size: view.width * 0.095, colour: '255,215,106', life: 1.6, band: 0.315,
     });
     if (e.gained > 0) {
       fx.telop(`+${e.gained}`, {
-        size: view.width * 0.070, colour: '255,255,255', life: 1.4, rise: 50, band: 0.48,
+        size: view.width * 0.070, colour: '255,255,255', life: 1.4, rise: 50, band: 0.385,
       });
     }
     if (e.titanic) sfx.fanfare();

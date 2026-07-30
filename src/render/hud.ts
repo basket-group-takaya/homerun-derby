@@ -116,9 +116,10 @@ const drawPitchChip = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, insets: Insets,
 ): void => {
   const pitch = state.pitch;
-  // hidden once the swing has resolved: the result card lives in this space
-  if (!pitch || state.phase === 'ready' || state.phase === 'result'
-    || state.phase === 'roundOver') return;
+  // Only while the ball is on its way to the plate. Once it has been struck the
+  // pitch type is history, the camera has left, and the chip was still sitting
+  // over the outfield during the whole flight.
+  if (!pitch || state.phase !== 'pitching') return;
   const pad = view.width * 0.045;
   const y = view.height - insets.bottom - view.width
     * (pitch.multiplier > 1 ? 0.335 : 0.205);
@@ -199,9 +200,14 @@ const drawResult = (
   const w = view.width - pad * 2;
   const h = view.width * 0.155;
 
-  ctx.fillStyle = 'rgba(8,13,23,0.66)';
+  // Opaque enough to sit on the infield dirt. At 0.66 the brown showed through
+  // and the card read as a smudge rather than a panel.
+  ctx.fillStyle = 'rgba(7,11,20,0.88)';
   roundRect(ctx, pad, y, w, h, view.width * 0.028);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(140,166,204,0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 
   const gradeColour: Record<string, string> = {
     perfect: '#ffd76a', great: '#8fe3ff', good: '#c9e3ff', weak: '#a8b6cc', miss: '#8d97ab',
