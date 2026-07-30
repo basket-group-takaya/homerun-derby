@@ -954,12 +954,29 @@ const reactToTransitions = (): void => {
 // camera
 // ---------------------------------------------------------------------------
 
+/**
+ * How long ago the ball was hit, or null if no batted ball is being SHOWN.
+ *
+ * The null case is the important one, and it is why cameraHome is checked here
+ * rather than by each caller. state.swing survives until the next pitch clears
+ * it, so "was there a hit" stays true right through the set position and the
+ * wind-up — but the camera has already cut back to the plate by then and the
+ * flight is over as far as the screen is concerned.
+ *
+ * Four things ask this question: the camera, whether to draw the batter, how
+ * far he has faded, and whether to draw the ball's arc. Three of them used to
+ * test cameraHome themselves and the fourth did not, so the arc of the last
+ * home run stayed painted across the sky while the next pitch was thrown. That
+ * is the failure mode of a flag every caller has to remember: it is not that
+ * the check is hard, it is that nothing tells you when you have forgotten it.
+ */
+const sinceContact = (): number | null => {
+  if (cameraHome) return null;
+  if (!state.swing || !state.swing.field) return null;
+  return state.flightTime ?? 0;
+};
+
 const viewMode = (): ViewMode => {
-  // cameraHome first, for the same reason cameraNow checks it first: once the
-  // cut back has happened we are looking at the plate again, and the plate view
-  // has a batter and a strike zone in it. Without this the camera came home and
-  // the batter did not — the pitcher wound up and threw to an empty box.
-  if (cameraHome) return 'pitch';
   const t = sinceContact();
   if (t === null) return 'pitch';
   return t <= CUT_HOLD_END ? 'pitch' : 'flight';
@@ -967,21 +984,14 @@ const viewMode = (): ViewMode => {
 
 /** The batter fades out as the camera pulls back, rather than popping. */
 const batterFade = (): number => {
-  if (cameraHome) return 1;          // cut back: he is standing there again
   const t = sinceContact();
-  if (t === null) return 1;
+  if (t === null) return 1;          // at the plate, or back at it after the cut
   if (t <= CUT_HOLD_END) return 1;
   return Math.max(0, 1 - ((t - CUT_HOLD_END) / (CUT_PULLBACK_END - CUT_HOLD_END)) * 2.2);
 };
 
-const sinceContact = (): number | null => {
-  if (!state.swing || !state.swing.field) return null;
-  return state.flightTime ?? 0;
-};
-
 const cameraNow = (): Camera => {
   // A cut, not a journey. See SET_PAUSE.
-  if (cameraHome) return PITCH_CAMERA;
   const t = sinceContact();
   if (t === null) return PITCH_CAMERA;
   const swing = state.swing;
@@ -1033,6 +1043,11 @@ if (devHooks) {
     round: state.round, lastEvent: state.lastEvent,
     windup, pauseLeft, uiScreen, hitStop: fx.hitStop(), scale: fx.timeScale(),
     crossTime: state.flight?.crossTime ?? null,
+    // The gate that decides whether the batted ball's arc is on screen. Exposed
+    // because the arc outliving the flight is invisible to every other readout:
+    // the phase, the score and the pitch count all look correct while the last
+    // home run is still painted across the sky.
+    cameraHome, sinceContact: sinceContact(), hasSwing: state.swing !== null,
   });
   // Skip the title screen without a tap. Synthetic clicks land on the card
   // roughly half the time — the canvas is letterboxed and the first click after
