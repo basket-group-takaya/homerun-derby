@@ -34,9 +34,20 @@ import { vec, add, sub, scale, cross, dot, normalize, radians } from '../core/ve
 import type { Projector } from './camera.js';
 import type { Quad, RGB } from './figure.js';
 import {
-  ROUND_SIDES, drawGroundShadow, drawQuads, jointQuads, limbQuads, roundLimb,
-  taperQuads, yawAbout,
+  ROUND_SIDES, drawGroundShadow, drawOutline, drawQuads, jointQuads, limbQuads,
+  roundLimb, taperQuads, yawAbout,
 } from './figure.js';
+
+/**
+ * The silhouette rim. 【調整可】
+ *
+ * Not black: a true black edge against a night sky is invisible and against
+ * daylight grass is harsh. A very dark blue reads as an outline in both.
+ * The expansion is in metres, so the rim gets thinner as he gets further away —
+ * which is what a drawn outline does not do, and what stops it looking pasted on.
+ */
+const OUTLINE = 'rgb(12,16,28)';
+const OUTLINE_EXPAND = 0.016;
 
 /** Where the batter's feet are. Left of the plate, level with it. */
 export const STANCE: Vec3 = vec(-0.72, 0, -0.04);
@@ -756,6 +767,8 @@ export const drawBatter = (
     drawQuads(ctx, p, parts.quads);
     ctx.restore();
   }
+  // The rim first, then the figure on top of it. See drawOutline.
+  drawOutline(ctx, p, parts.quads, OUTLINE, OUTLINE_EXPAND);
   drawQuads(ctx, p, parts.quads);
   drawDecal(ctx, p, parts.backPanel, {
     name: view.name, number: view.number, look, logo: view.logo,

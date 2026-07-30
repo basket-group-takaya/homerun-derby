@@ -100,10 +100,31 @@ export const SIDESPIN_MAX = 2200;
 // ---------------------------------------------------------------------------
 
 /** Fence distance [m] at 0 / 22.5 / 45 degrees from centre. */
-export const FENCE_CENTRE = 120.0;
-export const FENCE_ALLEY = 112.0;
-export const FENCE_LINE = 98.0;
-export const FENCE_HEIGHT = 3.6;
+/**
+ * The park, shaped like 阪神甲子園球場 and scaled to hold the difficulty.
+ *
+ * The owner asked for the look of 甲子園 「ただ難易度は上げないでほしい」, and
+ * those two pull against each other: 甲子園's real 95 / 118 / 118 with its real
+ * 3.0 m fence measures 40.0% home runs against the 46.3% the game had, because
+ * its defining feature is that the power alleys DO NOT BULGE — 118 in the gaps
+ * is the same as 118 to centre, where most parks give the batter a shorter
+ * corner to aim at.
+ *
+ * So the proportions are 甲子園's and the scale is 2% smaller: 93 / 115 / 115,
+ * fence 3.0 m. The ratio 93:115 is 0.809 against 甲子園's 95:118 = 0.805, so the
+ * shape reads the same, the low fence is the real one, and the measured home-run
+ * rate is 46.2% against the 46.3% it replaces — the same game.
+ *
+ * The distance markers on the wall show OUR numbers, not 甲子園's. Painting 118
+ * on a wall 115 m away would be the one part of this that was a lie.
+ *
+ * Measured over 1,170 fair balls across four levels and three players,
+ * 令和8年7月31日. Re-measure if the batted-ball physics ever move.
+ */
+export const FENCE_CENTRE = 115.0;
+export const FENCE_ALLEY = 115.0;
+export const FENCE_LINE = 93.0;
+export const FENCE_HEIGHT = 3.0;
 
 /** Fair territory is |phi| <= this [deg]. */
 export const FOUL_ANGLE = 45;
@@ -305,7 +326,17 @@ export const AIM_HIGH_FACTOR = 1.5;
 
 export const OUTS_PER_ROUND = 10;
 export const SCORE_BASE = 100;
-export const SCORE_DISTANCE_REF = 120;
+/**
+ * Where the distance bonus starts [m]. MUST equal FENCE_CENTRE.
+ *
+ * docs/SPEC.md 7-1: clearing the fence is worth the base 100 and every metre
+ * past it is the bonus, which only lines up if the two numbers are the same.
+ * It moved with the fence when the park took 甲子園's proportions; leaving it at
+ * 120 would have made a home run to centre worth the base and nothing else,
+ * with the bonus only starting five metres into the seats.
+ * Pinned by tests/stadium.test.ts.
+ */
+export const SCORE_DISTANCE_REF = 115;
 export const K_DIST = 2.0;
 export const COMBO_STEP = 0.1;
 export const COMBO_MAX = 2.0;

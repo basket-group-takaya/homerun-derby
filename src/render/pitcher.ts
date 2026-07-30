@@ -30,7 +30,7 @@ import { RELEASE_POINT } from '../core/pitch.js';
 import type { Projector } from './camera.js';
 import type { Quad, RGB } from './figure.js';
 import {
-  ROUND_SIDES, drawQuads, jointQuads, limbQuads, roundLimb, taperQuads,
+  ROUND_SIDES, drawOutline, drawQuads, jointQuads, limbQuads, roundLimb, taperQuads,
 } from './figure.js';
 
 /**
@@ -249,7 +249,11 @@ export const drawPitcher = (
   // No ground shadow: drawGroundShadow puts it on the field plane, and he is
   // standing 0.254 m up on the mound, so at this distance it would sit visibly
   // adrift below his feet rather than under them.
-  drawQuads(ctx, p, pitcherQuads(windup));
+  const quads = pitcherQuads(windup);
+  // Thinner than the batter's: he is 18 m away, and a rim scaled for the
+  // foreground would swallow him.
+  drawOutline(ctx, p, quads, 'rgb(12,16,28)', 0.020);
+  drawQuads(ctx, p, quads);
 };
 
 /** The world point his hand is at, for a given point in the delivery. */

@@ -34,6 +34,28 @@ const roundRect = (
 /** Extra padding at the top so the HUD clears a notch. Set from CSS env(). */
 export type Insets = { readonly top: number; readonly bottom: number };
 
+/**
+ * Text with a dark edge, so it survives whatever is behind it.
+ *
+ * A shadow is not enough. The HUD was drawn for a night sky and a day game puts
+ * white numerals on pale blue and yellow numerals on pale blue — both of which
+ * vanish. An outline does not care what is behind it, which is exactly why every
+ * sports game draws its numbers this way and why 「可読性をパワプロ的に」 means
+ * this before it means anything else.
+ */
+const outlined = (
+  ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
+  fill: string, weight: number,
+): void => {
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  ctx.lineWidth = weight;
+  ctx.strokeStyle = 'rgba(10,16,28,0.85)';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(text, x, y);
+};
+
 const drawTopBar = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, insets: Insets,
 ): void => {
@@ -44,24 +66,21 @@ const drawTopBar = (
   // score — the biggest thing on screen after the ball
   ctx.textAlign = 'left';
   ctx.font = `600 ${view.width * 0.032}px ${FONT}`;
-  ctx.fillStyle = 'rgba(198,216,242,0.85)';
-  ctx.fillText('SCORE', pad, top + view.width * 0.035);
+  outlined(ctx, 'SCORE', pad, top + view.width * 0.035, 'rgba(228,240,255,0.95)',
+    view.width * 0.012);
 
   ctx.font = `800 ${view.width * 0.098}px ${FONT}`;
-  ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0,0,0,0.6)';
-  ctx.shadowBlur = 10;
-  ctx.fillText(String(round.score), pad, top + view.width * 0.125);
-  ctx.shadowBlur = 0;
+  outlined(ctx, String(round.score), pad, top + view.width * 0.125, '#ffffff',
+    view.width * 0.022);
 
   // home runs, right-aligned
   ctx.textAlign = 'right';
   ctx.font = `600 ${view.width * 0.032}px ${FONT}`;
-  ctx.fillStyle = 'rgba(198,216,242,0.85)';
-  ctx.fillText('HR', view.width - pad, top + view.width * 0.035);
+  outlined(ctx, 'HR', view.width - pad, top + view.width * 0.035, 'rgba(228,240,255,0.95)',
+    view.width * 0.012);
   ctx.font = `800 ${view.width * 0.078}px ${FONT}`;
-  ctx.fillStyle = '#ffd76a';
-  ctx.fillText(String(round.homeRuns), view.width - pad, top + view.width * 0.118);
+  outlined(ctx, String(round.homeRuns), view.width - pad, top + view.width * 0.118,
+    '#ffd76a', view.width * 0.020);
 
   // outs, as pips: a number is read, pips are seen
   const pipR = view.width * 0.0125;

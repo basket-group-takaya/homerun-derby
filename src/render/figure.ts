@@ -318,6 +318,58 @@ export const drawQuads = (
   }
 };
 
+/**
+ * A dark rim around a figure's silhouette: the inverted-hull outline.
+ *
+ * The look the owner asked for — 「輪郭だけパワプロ的に」 — and the reason it is
+ * worth having is readability rather than style: a figure the colour of the
+ * night sky standing in front of a night sky has no edge, and in daylight the
+ * navy uniform sits on green grass with nothing between them.
+ *
+ * How it works. drawQuads keeps the faces pointing TOWARD the eye and throws
+ * away the ones pointing away. This keeps exactly the ones it throws away, pushes
+ * each a centimetre along its own outward normal, and fills them dark. The
+ * result is a slightly larger copy of the figure drawn behind it, so the only
+ * part that survives is the fringe around the silhouette — the interior edges
+ * are covered by the figure itself, which is what stops it looking like a
+ * wireframe.
+ *
+ * Must be drawn BEFORE the figure. It is a shell, not a stroke.
+ */
+export const drawOutline = (
+  ctx: CanvasRenderingContext2D, p: Projector, quads: readonly Quad[],
+  colour: string, expand: number,
+): void => {
+  type Ready = { readonly quad: Quad; readonly depth: number };
+  const ready: Ready[] = [];
+  for (const quad of quads) {
+    const mid = centroid(quad.pts);
+    const toFace = sub(mid, p.eye);
+    // the opposite test to drawQuads: keep what it discards
+    if (dot(quad.normal, toFace) <= 1e-4) continue;
+    const depth = dot(toFace, p.forward);
+    if (depth <= 0.02) continue;
+    ready.push({ quad, depth });
+  }
+  ready.sort((a, b) => b.depth - a.depth);
+
+  ctx.save();
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1;
+  for (const { quad } of ready) {
+    const grown = quad.pts.map((v) => add(v, scale(quad.normal, expand)));
+    const poly = p.projectPolygon(grown);
+    if (!poly) continue;
+    ctx.beginPath();
+    poly.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+};
+
 /** A soft elliptical shadow on the ground under a point. */
 export const drawGroundShadow = (
   ctx: CanvasRenderingContext2D, p: Projector, at: Vec3, radius: number, alpha: number,
