@@ -13,7 +13,7 @@
  * one round trip when online and still works fully offline.
  */
 
-const CACHE = 'bhrd-v2';
+const CACHE = 'bhrd-v4';
 
 /** Files whose contents change from build to build. */
 const isCode = (url) =>
@@ -43,13 +43,17 @@ const PRECACHE = [
   './dist/src/render/scene.js',
   './dist/src/render/stadium.js',
   './dist/src/audio/sfx.js',
+  './assets/player/bat_anchors.json',
   './assets/icon/icon-192.png',
   './assets/icon/icon-512.png',
   './assets/icon/icon-maskable-512.png',
 ];
 
 for (const id of ['yuki', 'takaya', 'atsushi']) {
-  for (const pose of ['stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4', 'back']) {
+  for (const pose of [
+    'stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4',
+    'back', 'back_cam', 'back_cam_body', 'back_cam_bat',
+  ]) {
     PRECACHE.push(`./assets/player/${id}/${pose}.png`);
   }
 }

@@ -27,6 +27,27 @@ import {
 
 export type Sprites = Partial<Record<string, HTMLImageElement>>;
 
+/**
+ * Where a player's bat is hinged, in fractions of the sprite, plus the angle it
+ * rests at. Produced by tools/make_back_camera.py, which cuts the bat out of the
+ * rear art so it can be swung as its own layer.
+ */
+export type BatAnchor = {
+  readonly pivotX: number;
+  readonly pivotY: number;
+  readonly restAngleDeg: number;
+};
+
+/** Absolute angle the bat reaches at the end of the follow-through [deg]. */
+/**
+ * Absolute angle the bat reaches at the end of the follow-through [deg].
+ *
+ * Chosen so the bat is LEVEL at the moment of contact, which is 43% of the way
+ * through the sweep (0.13 s of 0.30 s). Level at the ball is what the reference
+ * footage shows, and it is the frame the eye actually reads.
+ */
+const BAT_FOLLOW_THROUGH_DEG = 70;
+
 export type ViewMode = 'pitch' | 'flight';
 
 export type Presentation = {
@@ -42,6 +63,8 @@ export type Presentation = {
   readonly batterFade: number;
   /** Set while the player is on a home-run streak. docs/REFERENCE-HB2.md 9-B5. */
   readonly hot: number;
+  /** Bat hinge data for the batting player, or null until it has loaded. */
+  readonly batAnchor: BatAnchor | null;
 };
 
 const ZONE_MID_Y = (ZONE_BOTTOM + ZONE_TOP) / 2;
@@ -222,103 +245,104 @@ const drawCursor = (
 // ---------------------------------------------------------------------------
 
 /**
- * The batter as seen from behind, placed in screen space.
+ * The batter as seen from behind, placed in screen space, with a swinging bat.
  *
- * Deliberately not projected. At the pitch camera the batter is 3.7 m from the
- * eye and the zone is 4.0 m, so a physically-sized sprite is 97% of frame height
- * and swallows the shot. In this beat the batter is framing, not information —
- * so it is composed by eye and cropped by the bottom edge, the way the reference
- * genre frames it.
+ * Two layers. back_cam_body is the figure with the bat cut out of it, and
+ * back_cam_bat is the bat alone; tools/make_back_camera.py produces both, plus
+ * the hinge point. Rotating the bat layer about that hinge gives a real swing in
+ * the pitch camera — which is what the reference game does — where before there
+ * was a static sprite with a drawn streak beside it, so two bats were visible at
+ * once. If either layer or the hinge is missing, this falls back to the single
+ * back_cam image and no swing.
+ *
+ * Deliberately not projected. At the pitch camera the batter is 2.5 m from the
+ * eye, so a physically-sized sprite swallows the strike zone. In this beat the
+ * batter is the frame and the zone is the subject.
  */
 const drawBatterFromBehind = (
   ctx: CanvasRenderingContext2D, view: Viewport, sprites: Sprites,
-  hot: number, fade: number,
+  hot: number, fade: number, arc: number, anchor: BatAnchor | null,
 ): void => {
-  const img = sprites.back;
-  if (!img || !img.complete || img.naturalWidth === 0 || fade <= 0.01) return;
-  // LOWER-LEFT, 52% of frame height, feet on the bottom edge. All three numbers
-  // come off measured reference footage (docs/REFERENCE-HB2.md 3-1), not taste.
-  //
-  // Left is not negotiable. From behind the plate screen-right is +x is first
-  // base (pinned by tests/projection.test.ts), and a right-handed batter stands
-  // at x < 0 because he faces across the plate toward first base. He was briefly
-  // moved to the right so the back sprite's head direction would work, and that
-  // put him in the left-handed box during the pitch and teleported him to the
-  // right-handed box at contact. Never again: there is a regression test.
-  //
-  // KNOWN LIMITATION: assets/player/*/back.png is a straight-on rear view whose
-  // implied camera sits on the third-base side, so the head is turned to the
-  // frame's LEFT and the face is visible in profile. The reference game shows
-  // only the back of the head. This cannot be fixed by moving the camera — the
-  // strike zone has to stay near the view axis to remain face-on — so it needs
-  // different art. docs/PROGRESS.md star-judgement 11.
+  const ready = (i: HTMLImageElement | undefined): i is HTMLImageElement =>
+    i !== undefined && i.complete && i.naturalWidth > 0;
+
+  const body = sprites.back_cam_body;
+  const bat = sprites.back_cam_bat;
+  const whole = sprites.back_cam ?? sprites.back;
+  const twoLayer = anchor !== null && ready(body) && ready(bat);
+  const base = twoLayer ? body : whole;
+  if (!ready(base) || fade <= 0.01) return;
+
+  // 52% of frame height with the feet on the bottom edge, which is what the
+  // reference footage measures at (docs/REFERENCE-HB2.md 3-1: about 51%).
   const h = view.height * 0.52;
-  const w = (h * img.naturalWidth) / img.naturalHeight;
+  const w = (h * base.naturalWidth) / base.naturalHeight;
   const x = view.width * 0.26 - w / 2;
   const y = view.height * 1.00 - h;
 
   ctx.save();
   ctx.globalAlpha = Math.min(1, fade);
+
+  // Body turn. The rear art is a single frame, so the torso cannot be animated
+  // cel by cel, but pivoting it at the hips and leaning into the ball carries
+  // the swing along with the bat instead of leaving the body frozen.
+  const swinging = arc > 0;
+  const progress = Math.min(1, arc);
+  if (swinging) {
+    const turn = 1 - Math.pow(1 - progress, 2.2);
+    ctx.translate(x + w * 0.52, y + h * 0.93);
+    ctx.rotate(turn * 0.16);
+    const lunge = 1 + turn * 0.03;
+    ctx.scale(lunge, lunge);
+    ctx.translate(-(x + w * 0.52), -(y + h * 0.93));
+  }
+
   if (hot > 0) {
     ctx.shadowColor = `rgba(255,196,96,${0.75 * hot})`;
     ctx.shadowBlur = 34 * hot;
-    ctx.drawImage(img, x, y, w, h);
+    ctx.drawImage(base, x, y, w, h);
     ctx.shadowBlur = 0;
   }
-  ctx.drawImage(img, x, y, w, h);
-  ctx.restore();
-};
+  ctx.drawImage(base, x, y, w, h);
 
-/**
- * The bat sweeping through, drawn over the behind view.
- *
- * The back sprite cannot animate — there is exactly one frame of it — so the
- * swing is carried by an arc drawn in code. That is enough: what the eye needs
- * at this moment is evidence that the bat crossed the zone, not anatomy.
- */
-const drawBatArc = (
-  ctx: CanvasRenderingContext2D, view: Viewport, arc: number,
-): void => {
-  if (arc <= 0 || arc >= 1) return;
-  // Pivot at the batter's hands, lower-left. The bat sweeps from up over his
-  // shoulder round to pointing at the frame's RIGHT, which is where the
-  // reference footage has it at contact: extended horizontally across the plate.
-  const cx = view.width * 0.30;
-  const cy = view.height * 0.720;
-  const radius = view.height * 0.255;
-  const from = -2.35;
-  const to = -0.10;
-  const angle = from + (to - from) * arc;
+  if (twoLayer && anchor) {
+    const px = x + anchor.pivotX * w;
+    const py = y + anchor.pivotY * h;
+    // Linear, and tuned so the bat is level at the moment of contact rather than
+    // after it: the bat reaches the ball T_SWING (130 ms) after the input, which
+    // is 59% of the way through the 220 ms sweep.
+    const sweep = (progress: number): number =>
+      ((BAT_FOLLOW_THROUGH_DEG - anchor.restAngleDeg) * progress * Math.PI) / 180;
 
-  ctx.save();
-  ctx.lineCap = 'round';
-  // the smear behind the bat, i.e. at angles it has already passed
-  for (let i = 1; i <= 6; i++) {
-    const a = angle - i * 0.16;
-    if (a < from) break;
-    ctx.strokeStyle = `rgba(255,255,255,${0.16 * (1 - i / 7) * (1 - arc * 0.4)})`;
-    ctx.lineWidth = 12 - i;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, a, a + 0.14);
-    ctx.stroke();
+    const drawBat = (progress: number, alpha: number): void => {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, fade) * alpha;
+      ctx.translate(px, py);
+      ctx.rotate(sweep(progress));
+      ctx.translate(-px, -py);
+      ctx.drawImage(bat, x, y, w, h);
+      ctx.restore();
+    };
+
+    if (swinging) {
+      // ghosts behind the bat, for a motion smear made of the bat itself
+      for (let i = 3; i >= 1; i--) {
+        const back = progress - i * 0.075;
+        if (back > 0) drawBat(back, 0.10 * (4 - i) * 0.5);
+      }
+    }
+    drawBat(swinging ? progress : 0, 1);
   }
-  // the bat itself
-  const bx = cx + Math.cos(angle) * radius;
-  const by = cy + Math.sin(angle) * radius;
-  const hx = cx + Math.cos(angle) * radius * 0.28;
-  const hy = cy + Math.sin(angle) * radius * 0.28;
-  ctx.strokeStyle = '#1a1a1e';
-  ctx.lineWidth = 15;
-  ctx.beginPath();
-  ctx.moveTo(hx, hy); ctx.lineTo(bx, by);
-  ctx.stroke();
-  ctx.strokeStyle = '#3a3a42';
-  ctx.lineWidth = 8;
-  ctx.beginPath();
-  ctx.moveTo(hx, hy); ctx.lineTo(bx, by);
-  ctx.stroke();
+
   ctx.restore();
 };
+
+/*
+ * The code-drawn bat arc that used to live here is gone. It existed because the
+ * rear sprite's bat could not move, and it meant two bats were on screen during
+ * every swing — the sprite's, held up, and the drawn one, swinging. The bat is
+ * now a real layer that rotates (see drawBatterFromBehind).
+ */
 
 /*
  * There is deliberately no side-view batter here any more.
@@ -368,7 +392,8 @@ export const drawScene = (
   }
 
   if (show.mode === 'pitch') {
-    drawBatterFromBehind(ctx, view, sprites, show.hot, show.batterFade);
+    drawBatterFromBehind(
+      ctx, view, sprites, show.hot, show.batterFade, show.swingArc, show.batAnchor);
     drawZone(ctx, p);
     if (state.flight && state.phase === 'pitching') {
       drawPitchTrail(ctx, p, state);
@@ -378,7 +403,6 @@ export const drawScene = (
       drawBall(ctx, p, RELEASE_POINT);
     }
     drawCursor(ctx, p, state, show.hot);
-    drawBatArc(ctx, view, show.swingArc);
   }
 };
 

@@ -36,7 +36,7 @@ import {
   makeProjector, PITCH_CAMERA, cameraAfterContact, shakeCamera,
   CUT_HOLD_END, CUT_PULLBACK_END,
 } from './render/camera.js';
-import type { Sprites, ViewMode } from './render/scene.js';
+import type { BatAnchor, Sprites, ViewMode } from './render/scene.js';
 import { drawScene } from './render/scene.js';
 import { drawHud } from './render/hud.js';
 import type { CutIn, Faces } from './render/screens.js';
@@ -62,9 +62,20 @@ const MAX_ASPECT = 2.30;
 
 const WINDUP_SECONDS = 0.55;
 const RESULT_PAUSE = 1.25;
-const SWING_ARC_SECONDS = 0.22;
+/**
+ * How long the bat takes to travel from the shoulder to the follow-through [s].
+ *
+ * Must outlast the batter's time on screen. The pitch camera holds for
+ * CUT_HOLD_END (0.16 s) after contact and contact itself is T_SWING (0.13 s)
+ * after the input, so the bat is visible for 0.29 s — at 0.22 s the sweep
+ * finished early and the bat snapped back to the shoulder in shot.
+ */
+const SWING_ARC_SECONDS = 0.30;
 
-const POSES = ['stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4', 'back'] as const;
+const POSES = [
+  'stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4',
+  'back', 'back_cam', 'back_cam_body', 'back_cam_bat',
+] as const;
 
 // ---------------------------------------------------------------------------
 // canvas
@@ -149,6 +160,22 @@ const loadSprites = (id: PlayerId): Sprites => {
   return set;
 };
 for (const id of PLAYER_IDS) loadSprites(id);
+
+/**
+ * Bat hinge points, fetched rather than inlined so they cannot drift away from
+ * the sprites tools/make_back_camera.py generated alongside them. Until it
+ * arrives — or if it never does — the batter is drawn as one piece and does not
+ * swing, which is the pre-existing behaviour rather than a broken screen.
+ */
+let batAnchors: Partial<Record<PlayerId, BatAnchor>> = {};
+void fetch('assets/player/bat_anchors.json')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((data: unknown) => {
+    if (data && typeof data === 'object') {
+      batAnchors = data as Partial<Record<PlayerId, BatAnchor>>;
+    }
+  })
+  .catch(() => { /* offline first load, or the file is absent */ });
 
 // ---------------------------------------------------------------------------
 // state
@@ -757,8 +784,9 @@ const advance = (dt: number): void => {
   scoreboardFlash = Math.max(0, scoreboardFlash - dt * 1.2);
   poleFlash = Math.max(0, poleFlash - dt * 1.2);
   if (swingArc >= 0) {
-    swingArc += dt / SWING_ARC_SECONDS;
-    if (swingArc > 1) swingArc = -1;
+    // held at 1, not reset: the bat stays where the swing left it until the next
+    // pitch, instead of springing back to the shoulder while still on screen
+    swingArc = Math.min(1, swingArc + dt / SWING_ARC_SECONDS);
   }
 
   if (fx.hitStop() > 0) return;
@@ -777,6 +805,7 @@ const advance = (dt: number): void => {
       windup += dt;
       if (windup >= WINDUP_SECONDS) {
         windup = 0;
+        swingArc = -1;
         state = step(state, { kind: 'pitch' });
         sfx.blip(300, 0.05);
       }
@@ -818,6 +847,7 @@ const render = (): void => {
     stadium: { scoreboardFlash, poleFlash },
     batterFade: batterFade(),
     hot: streak >= 2 ? Math.min(1, (streak - 1) / 2) : 0,
+    batAnchor: batAnchors[state.player] ?? null,
   });
   fx.drawWorld(ctx, projector);
   drawHud(ctx, state, view, insets, best, lastBanked, save.points);
