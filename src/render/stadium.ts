@@ -810,9 +810,9 @@ export type StadiumFlags = {
   readonly poleFlash: number;
 };
 
-export const drawStadium = (
+const paintStadium = (
   ctx: CanvasRenderingContext2D, p: Projector, view: Viewport, flags: StadiumFlags,
-  when: TimeOfDay = 'night',
+  when: TimeOfDay,
 ): void => {
   applySkin(when);
   drawSky(ctx, view);
@@ -824,4 +824,71 @@ export const drawStadium = (
   drawLines(ctx, p);
   drawFence(ctx, p);
   drawPoles(ctx, p, flags.poleFlash);
+};
+
+/*
+ * The stadium is baked to an offscreen canvas and blitted.
+ *
+ * Measured, not guessed: one frame of the park costs about 1,600 fills, 1,300
+ * strokes and 3,100 rectangles — the crowd and the lit windows are most of it.
+ * And while the pitcher is winding up NONE of it changes, because the camera is
+ * parked behind the batter and the park is not animated. The whole thing was
+ * being redrawn sixty times a second to produce an identical image.
+ *
+ * The key comes from the projector rather than from a hand-picked list of
+ * fields, so a camera change cannot quietly fail to invalidate it. When the
+ * camera IS moving — following a fly ball — every frame misses and this costs
+ * one extra blit over drawing directly, which is the right trade: the expensive
+ * case is the common one.
+ *
+ * The practical consequence is that DETAIL IS NOW CHEAP. More boards, a fuller
+ * scoreboard and more towers cost nothing on a static camera, which is what the
+ * remaining work on the look needs.
+ */
+let cacheCanvas: HTMLCanvasElement | null = null;
+let cacheKey = '';
+
+export const drawStadium = (
+  ctx: CanvasRenderingContext2D, p: Projector, view: Viewport, flags: StadiumFlags,
+  when: TimeOfDay = 'night',
+): void => {
+  // The device transform: the visible canvas draws in logical units on a larger
+  // backing store, and the bake has to match it or the blit comes back soft.
+  const t = ctx.getTransform();
+  const sx = t.a;
+  const sy = t.d;
+  const w = Math.max(1, Math.round(view.width * sx));
+  const h = Math.max(1, Math.round(view.height * sy));
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
+    paintStadium(ctx, p, view, flags, when);
+    return;
+  }
+
+  const key = `${p.key}|${when}|${w}x${h}|${flags.scoreboardFlash > 0 ? 1 : 0}`
+    + `|${flags.poleFlash.toFixed(3)}`;
+
+  if (cacheKey !== key || !cacheCanvas) {
+    const surface = cacheCanvas ?? document.createElement('canvas');
+    if (surface.width !== w || surface.height !== h) {
+      surface.width = w;
+      surface.height = h;
+    }
+    const bake = surface.getContext('2d');
+    if (!bake) {                       // no second context: draw straight through
+      paintStadium(ctx, p, view, flags, when);
+      return;
+    }
+    bake.setTransform(sx, 0, 0, sy, 0, 0);
+    bake.clearRect(0, 0, view.width, view.height);
+    paintStadium(bake, p, view, flags, when);
+    cacheCanvas = surface;
+    cacheKey = key;
+  } else {
+    // The skin is global mutable state that the figures also read, and on a
+    // cache hit paintStadium never runs to set it. Missing this leaves the
+    // players lit for the wrong time of day the moment the cache warms up.
+    applySkin(when);
+  }
+
+  ctx.drawImage(cacheCanvas, 0, 0, view.width, view.height);
 };

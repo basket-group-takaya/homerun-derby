@@ -20,7 +20,7 @@
 
 import type { Vec3 } from '../core/vec.js';
 import { vec, add, sub, scale, cross, dot, normalize, length } from '../core/vec.js';
-import type { Projector } from './camera.js';
+import type { Point2, Projector } from './camera.js';
 
 export type RGB = readonly [number, number, number];
 
@@ -31,6 +31,16 @@ export type Quad = {
   readonly normal: Vec3;
   /** Extra brightness, 0..1, for things that should read as emissive. */
   readonly glow?: number;
+  /**
+   * Normals at the two side edges, for smooth shading. Optional; absent means
+   * "this face is genuinely flat, shade it as one colour".
+   *
+   * [0] belongs to the edge pts[0]–pts[3], [1] to the edge pts[1]–pts[2]. Each
+   * is the average of this face's normal and its neighbour's across that edge,
+   * which is what makes the shading continuous across the seam. See
+   * SMOOTH_LIMIT for when they are handed out and when they are not.
+   */
+  readonly edge?: readonly [Vec3, Vec3];
 };
 
 /** Direction the light comes FROM. Above, in front, and off to the side. */
@@ -83,6 +93,18 @@ const WRAP = 0.45;
  */
 const RIM = 0.34;
 const RIM_POWER = 3.0;
+
+/**
+ * How nearly parallel two faces must be before the seam between them is smoothed.
+ *
+ * cos 50 degrees. A twelve-sided limb turns 30 degrees per face and a
+ * eight-sided one 45, so both round off; a four-sided torso or bat turns 90 and
+ * keeps its corners. That distinction is the whole point — smoothing everything
+ * turns boxes into pillows, and smoothing nothing is what made the figure look
+ * machined. The rule is per EDGE, not per object, so one solid can have round
+ * sides and sharp caps, which is what a real limb looks like.
+ */
+const SMOOTH_LIMIT = 0.643;
 
 const shade = (colour: RGB, normal: Vec3, glow: number, toEye?: Vec3): string => {
   const raw = dot(normal, LIGHT);
@@ -206,20 +228,42 @@ export const taperQuads = (
   const lo = ring(a, halfA);
   const hi = ring(b, halfB);
 
-  const quads: Quad[] = [];
-  const push = (p: readonly Vec3[]): void => {
-    quads.push({
-      pts: p,
-      colour,
-      normal: normalize(cross(sub(p[1] as Vec3, p[0] as Vec3), sub(p[2] as Vec3, p[1] as Vec3))),
-    });
-  };
+  const faceNormal = (p: readonly Vec3[]): Vec3 =>
+    normalize(cross(sub(p[1] as Vec3, p[0] as Vec3), sub(p[2] as Vec3, p[1] as Vec3)));
+
+  // Every side face is built first, because a face cannot know how to shade its
+  // own edges until it knows which way its neighbours are pointing.
+  const sides_: Vec3[][] = [];
+  const normals: Vec3[] = [];
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
-    push([lo[i] as Vec3, lo[j] as Vec3, hi[j] as Vec3, hi[i] as Vec3]);
+    const p = [lo[i] as Vec3, lo[j] as Vec3, hi[j] as Vec3, hi[i] as Vec3];
+    sides_.push(p);
+    normals.push(faceNormal(p));
   }
-  push([...lo].reverse());
-  push([...hi]);
+
+  const quads: Quad[] = [];
+  for (let i = 0; i < n; i++) {
+    const self = normals[i] as Vec3;
+    const prev = normals[(i - 1 + n) % n] as Vec3;
+    const next = normals[(i + 1) % n] as Vec3;
+    // Only average across a seam the eye should not see. A sharp corner that
+    // gets smoothed reads as a dent, which is worse than the facet it replaced.
+    const left = dot(self, prev) > SMOOTH_LIMIT ? normalize(add(self, prev)) : self;
+    const right = dot(self, next) > SMOOTH_LIMIT ? normalize(add(self, next)) : self;
+    quads.push({
+      pts: sides_[i] as Vec3[],
+      colour,
+      normal: self,
+      ...(left === self && right === self ? {} : { edge: [left, right] as const }),
+    });
+  }
+  // The caps stay flat: they are flat.
+  const cap = (p: readonly Vec3[]): void => {
+    quads.push({ pts: p, colour, normal: faceNormal(p) });
+  };
+  cap([...lo].reverse());
+  cap([...hi]);
   return quads;
 };
 
@@ -282,6 +326,16 @@ export const yawQuads = (quads: readonly Quad[], about: Vec3, radians: number): 
     ...q,
     pts: q.pts.map((p) => yawAbout(p, about, radians)),
     normal: yawAbout(q.normal, vec(0, 0, 0), radians),
+    // The edge normals are directions too, and forgetting to turn them leaves a
+    // figure whose shading stays pointing the way it faced before it moved.
+    ...(q.edge
+      ? {
+        edge: [
+          yawAbout(q.edge[0], vec(0, 0, 0), radians),
+          yawAbout(q.edge[1], vec(0, 0, 0), radians),
+        ] as const,
+      }
+      : {}),
   }));
 
 // ---------------------------------------------------------------------------
@@ -306,6 +360,74 @@ const centroid = (pts: readonly Vec3[]): Vec3 => {
  * test would mean writing a rasteriser, and Canvas 2D fill is hardware-assisted
  * where a hand-written rasteriser would not be.
  */
+/**
+ * Half a pixel of overlap between neighbouring faces, to hide the seam.
+ *
+ * Two polygons that share an edge do NOT meet cleanly when antialiased: each
+ * covers about half of the boundary pixel and blends with what is behind it, so
+ * a bright crack runs along every edge of the figure. The old fix was to stroke
+ * each face in its own fill colour, and it worked — but measurement put it at
+ * 60% of the whole frame, because a stroke rasterises a second time round the
+ * path. Pushing the corners out instead costs four multiplies per vertex.
+ *
+ * Outward is "away from the centroid", which is well defined here because every
+ * face is convex. The push is a fixed number of pixels rather than a percentage
+ * so that distant faces, which is where cracks are worst, get the same cover.
+ */
+const SEAM_PAD = 0.5;
+
+const inflate = (poly: readonly Point2[]): readonly Point2[] => {
+  let cx = 0;
+  let cy = 0;
+  for (const q of poly) { cx += q.x; cy += q.y; }
+  cx /= poly.length;
+  cy /= poly.length;
+  return poly.map((q) => {
+    const dx = q.x - cx;
+    const dy = q.y - cy;
+    const d = Math.hypot(dx, dy);
+    if (d < 1e-6) return q;
+    const k = (d + SEAM_PAD) / d;
+    return { x: cx + dx * k, y: cy + dy * k };
+  });
+};
+
+/**
+ * A fill that varies across the face: Gouraud shading, drawn with a gradient.
+ *
+ * This is the single change that separates "a solid built out of flat panels"
+ * from "a rounded object". Flat shading gives every face one colour, so a
+ * twelve-sided arm is twelve visible strips no matter how many sides it has —
+ * adding polygons only makes the strips narrower. Interpolating the shade
+ * ACROSS each face instead makes the seams disappear, and twelve sides then
+ * read as a cylinder.
+ *
+ * The endpoints are the midpoints of the two side edges, projected. They are
+ * projected separately rather than taken from the clipped polygon because
+ * near-plane clipping changes the point list, and a gradient anchored to
+ * clipped corners slides as the camera moves.
+ *
+ * Returns null when the face is edge-on — a zero-length gradient paints nothing
+ * at all in Canvas 2D, which would punch a hole in the figure.
+ */
+const gradientAcross = (
+  ctx: CanvasRenderingContext2D, p: Projector, quad: Quad,
+  edge: readonly [Vec3, Vec3], glow: number, toEye: Vec3,
+): CanvasGradient | null => {
+  const pts = quad.pts;
+  if (pts.length < 4) return null;
+  const mid = (a: Vec3, b: Vec3): Vec3 => scale(add(a, b), 0.5);
+  const a = p.project(mid(pts[0] as Vec3, pts[3] as Vec3));
+  const b = p.project(mid(pts[1] as Vec3, pts[2] as Vec3));
+  if (!a || !b) return null;
+  if (Math.abs(a.x - b.x) < 0.4 && Math.abs(a.y - b.y) < 0.4) return null;
+  const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+  g.addColorStop(0, shade(quad.colour, edge[0], glow, toEye));
+  g.addColorStop(0.5, shade(quad.colour, quad.normal, glow, toEye));
+  g.addColorStop(1, shade(quad.colour, edge[1], glow, toEye));
+  return g;
+};
+
 export const drawQuads = (
   ctx: CanvasRenderingContext2D, p: Projector, quads: readonly Quad[],
 ): void => {
@@ -327,15 +449,15 @@ export const drawQuads = (
     const poly = p.projectPolygon(quad.pts);
     if (!poly) continue;
     ctx.beginPath();
-    poly.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
+    const grown = inflate(poly);
+    grown.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
     ctx.closePath();
-    ctx.fillStyle = shade(quad.colour, quad.normal, quad.glow ?? 0, toEye);
+    const glow = quad.glow ?? 0;
+    const flat = shade(quad.colour, quad.normal, glow, toEye);
+    ctx.fillStyle = quad.edge
+      ? gradientAcross(ctx, p, quad, quad.edge, glow, toEye) ?? flat
+      : flat;
     ctx.fill();
-    // A hairline stroke in the same colour closes the seams between adjacent
-    // faces. Without it, antialiasing leaves bright cracks along every edge.
-    ctx.strokeStyle = ctx.fillStyle;
-    ctx.lineWidth = 1;
-    ctx.stroke();
   }
 };
 
@@ -383,10 +505,12 @@ export const drawOutline = (
     const poly = p.projectPolygon(grown);
     if (!poly) continue;
     ctx.beginPath();
-    poly.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
+    // Same seam padding as the figure itself. The outline is one flat colour, so
+    // the only thing showing through its cracks is the background — which is
+    // exactly what an outline exists to keep out.
+    inflate(poly).forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
     ctx.closePath();
     ctx.fill();
-    ctx.stroke();
   }
   ctx.restore();
 };

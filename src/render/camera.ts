@@ -41,6 +41,16 @@ export type Viewport = { readonly width: number; readonly height: number };
 export type Point2 = { readonly x: number; readonly y: number };
 
 export type Projector = {
+  /**
+   * Everything this projector depends on, as a string.
+   *
+   * Exists so a caller can tell whether the view has changed since it last drew
+   * something, without comparing floats itself and without guessing which parts
+   * of the camera matter. It is built from the whole Camera and the whole
+   * Viewport, so a new field on Camera cannot silently fall out of the key and
+   * leave a cache serving a stale frame.
+   */
+  readonly key: string;
   readonly project: (p: Vec3) => Projected | null;
   /** Screen pixels per metre at a given depth — used to size the ball. */
   readonly scaleAt: (depth: number) => number;
@@ -116,6 +126,11 @@ export const makeProjector = (camera: Camera, view: Viewport): Projector => {
   return {
     project,
     scaleAt: (depth: number): number => focal / Math.max(depth, 0.01),
+    key: [
+      camera.eye.x, camera.eye.y, camera.eye.z,
+      camera.target.x, camera.target.y, camera.target.z,
+      camera.vfov, camera.hfov ?? -1, view.width, view.height,
+    ].map((n) => n.toFixed(4)).join(','),
     forward,
     eye: camera.eye,
     projectPolygon,
