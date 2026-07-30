@@ -28,7 +28,7 @@ const BALL = { x: 0, y: 0.75 } as const;
  * few that care about a real player call abilityAt.
  */
 const able = (over: Partial<Ability> = {}): Ability => ({
-  meet: 60, power: 60, trajectory: 3, specials: [], ...over,
+  meet: 60, power: 60, trajectory: 3, specials: [], breakthrough: 0, ...over,
 });
 
 const swing = (over: Partial<ContactInput> = {}): ContactInput => ({

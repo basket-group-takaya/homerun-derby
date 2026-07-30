@@ -46,11 +46,14 @@ import {
   shopListBottom, shopListTop, shopOpenBox, shopRows, shopScrollMax, soundBox,
 } from './render/screens.js';
 import { BATS, bankedPoints } from './core/bats.js';
-import { batsGained, levelOf, levelProgress } from './core/level.js';
+import { MAX_LEVEL, batsGained, levelOf, levelProgress } from './core/level.js';
 import type { PlayerSave, Save } from './storage.js';
 import { batsFor, loadSave, storeSave, withPlayer } from './storage.js';
 import type { SpecialId } from './core/ability.js';
-import { SPECIAL_NAME, specialXp, specialsAt } from './core/ability.js';
+import {
+  BREAK_STARS, SPECIAL_NAME, breakthroughForXp, specialXp, specialsAt, starProgress,
+  starsForXp,
+} from './core/ability.js';
 import { PITCHERS } from './core/pitchers.js';
 import { createFx } from './render/fx.js';
 import { createSfx } from './audio/sfx.js';
@@ -365,6 +368,19 @@ let lastBanked = 0;
 /** The slot for whoever is batting. Everything progression-shaped reads this. */
 const slot = (id: PlayerId = selected): PlayerSave => save.players[id];
 const levelFor = (id: PlayerId = selected): number => levelOf(slot(id).xp);
+
+/**
+ * The 限界突破 stars for an experience total, as text to sit beside the level.
+ *
+ * Empty until the first star lands, so nothing changes for a player who has not
+ * got there — an empty row of hollow stars on a level-3 card would advertise a
+ * mode that is three hundred thousand experience away.
+ */
+const starText = (xp: number): string => {
+  const stars = starsForXp(xp);
+  if (stars <= 0) return '';
+  return ' ' + '★'.repeat(stars) + '☆'.repeat(BREAK_STARS - stars);
+};
 /** Level-up banner state. Presentation only; the level itself lives in the save. */
 let levelUpTo = 0;
 let levelUpBats: readonly string[] = [];
@@ -592,7 +608,7 @@ const titleTap = (px: number, py: number): void => {
       storeSave(save);
       state = initialState(
         Date.now() & 0x7fffffff, selected, roundMode,
-        me.bat, levelOf(me.xp), me.pitcher);
+        me.bat, levelOf(me.xp), me.pitcher, breakthroughForXp(me.xp));
       fx.reset();
       cutIn = null;
       previousEvent = null;
@@ -1057,7 +1073,8 @@ if (devHooks) {
     selected = who as PlayerId;
     const me = slot(selected);
     state = initialState(
-      Date.now() & 0x7fffffff, selected, roundMode, me.bat, levelOf(me.xp), me.pitcher);
+      Date.now() & 0x7fffffff, selected, roundMode, me.bat, levelOf(me.xp), me.pitcher,
+      breakthroughForXp(me.xp));
     fx.reset();
     cutIn = null;
     previousEvent = null;
@@ -1291,7 +1308,8 @@ const drawPauseScreen = (): void => {
   ctx.font = `600 ${view.width * 0.032}px "Segoe UI", system-ui, sans-serif`;
   ctx.fillStyle = 'rgba(160,182,214,0.9)';
   ctx.fillText(
-    `${PLAYERS[state.player].name}　Lv.${levelOf(slot().xp)}　${BATS[state.bat].name}`,
+    `${PLAYERS[state.player].name}　Lv.${levelOf(slot().xp)}${starText(slot().xp)}`
+    + `　${BATS[state.bat].name}`,
     cx, view.height * 0.30 + view.width * 0.125);
 
   const button = (
@@ -1368,7 +1386,16 @@ const drawLevelBar = (): void => {
   if (state.phase === 'roundOver') return;   // the full-screen card owns it all
   if (resultCardVisible(state)) return;      // the card owns this strip
   const level = levelOf(slot().xp);
-  const f = levelProgress(slot().xp);
+  /*
+   * Past level 99 the bar changes what it is measuring.
+   *
+   * levelProgress pins to 1 at the cap, so without this the bar sits full for
+   * the whole of the limit break — the longest stretch of the game — and the
+   * player has no way to tell that anything is still accruing. It fills toward
+   * the next star instead, which is the thing that is actually moving.
+   */
+  const capped = level >= MAX_LEVEL;
+  const f = capped ? starProgress(slot().xp) : levelProgress(slot().xp);
   // Bottom-left, under the player chip: the top-right corner already holds the
   // home-run count and the out markers, and the bar sat on top of both.
   const w = view.width * 0.40;
@@ -1382,10 +1409,12 @@ const drawLevelBar = (): void => {
   ctx.font = `800 ${view.width * 0.030}px "Segoe UI", system-ui, sans-serif`;
   ctx.fillStyle = 'rgba(214,228,250,0.85)';
   ctx.textAlign = 'left';
-  ctx.fillText(`Lv.${level}`, x, y - 7);
+  ctx.fillText(`Lv.${level}${starText(slot().xp)}`, x, y - 7);
   ctx.fillStyle = 'rgba(255,255,255,0.14)';
   ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = 'rgba(143,227,255,0.92)';
+  // Gold once the limit break has started, so the bar reads as a different
+  // thing rather than as the level bar having got stuck.
+  ctx.fillStyle = capped ? 'rgba(255,206,92,0.95)' : 'rgba(143,227,255,0.92)';
   ctx.fillRect(x, y, w * f, h);
   ctx.restore();
 };

@@ -12,9 +12,9 @@ import type { Ability } from './ability.js';
 import { lateShapeFor, liftedLaunchAngle, specialExit, specialPower } from './ability.js';
 import type { BatSpec } from './bats.js';
 import { BATS, DEFAULT_BAT, effectiveMaxExit } from './bats.js';
-import { BASE_LAUNCH_ANGLE, catchRadiusFor } from './ranks.js';
+import { BASE_LAUNCH_ANGLE, catchRadiusFor, exitCeiling } from './ranks.js';
 import {
-  BALL_RADIUS, EXIT_VELOCITY_MAX,
+  BALL_RADIUS,
   FOUL_ANGLE, HEIGHT_REF, K_HEIGHT, K_PHI, K_THETA,
   Q_FOUL, Q_GOOD, Q_MEET_EXP, Q_TIME_EXP, R_JUST_RATIO,
   THETA_MAX, THETA_MIN, T_JUST, T_MISS, V_MIN,
@@ -149,7 +149,7 @@ export const resolveContact = (input: ContactInput): Contact => {
   // one is active. Feeding it through effectiveMaxExit rather than multiplying the
   // exit velocity afterwards is what keeps it under the record without clamping.
   const power = ability.power + specialPower(ability.specials);
-  const maxExit = effectiveMaxExit(power, bat, lift);
+  const maxExit = effectiveMaxExit(power, bat, lift, exitCeiling(ability.breakthrough));
   let exitVelocity = (V_MIN + (maxExit - V_MIN) * quality) * lift;
 
   /*
@@ -172,7 +172,10 @@ export const resolveContact = (input: ContactInput): Contact => {
   const sprayAngle = K_PHI * t;
 
   const kind = classify(e, t, quality, radius, sprayAngle);
-  exitVelocity = Math.min(exitVelocity, EXIT_VELOCITY_MAX);
+  // The ceiling moves with 限界突破. Without this the whole limit break is
+  // invisible: power 200 and power 115 both clamp to the same number here and
+  // the ball comes off the bat at exactly the same speed.
+  exitVelocity = Math.min(exitVelocity, exitCeiling(ability.breakthrough));
 
   return {
     kind, e, t, u, quality, exitVelocity, launchAngle, sprayAngle,

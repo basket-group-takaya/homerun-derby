@@ -40,6 +40,22 @@ export const REFERENCE_AIR_DENSITY = 1.1822;
  */
 export const EXIT_VELOCITY_MAX = 197.8 / 3.6;
 
+/**
+ * Hard cap on exit velocity once 限界突破 is complete [m/s]. 【要判断・非現実】
+ *
+ * 245 km/h. NOTHING HUMAN HAS DONE THIS — it is 24% past the fastest batted
+ * ball ever measured, and the whole of the rest of this file is pinned to real
+ * measurements. It is here because the owner asked for a limit break above
+ * level 99 (令和8年7月31日) and a limit break that stayed inside the record
+ * would not be one.
+ *
+ * It is a SEPARATE constant rather than a larger EXIT_VELOCITY_MAX so that the
+ * ordinary game keeps its sourced ceiling and the fiction is confined to the
+ * mode that asked for it. A ball hit by a level-99 batter still cannot beat
+ * Stanton; a ball hit by a fully broken one is openly not simulating anybody.
+ */
+export const BREAKTHROUGH_EXIT_VELOCITY_MAX = 245 / 3.6;
+
 export const GRAVITY = 9.807;
 
 /**

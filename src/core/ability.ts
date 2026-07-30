@@ -24,8 +24,8 @@
 
 import type { PlayerId } from './constants.js';
 import type { Trajectory } from './ranks.js';
-import { clampAbility, rankOf } from './ranks.js';
-import { levelOf } from './level.js';
+import { clampAbility, clampPower, rankOf } from './ranks.js';
+import { levelOf, xpToReach } from './level.js';
 
 export type SpecialId = 'powerHitter' | 'artist' | 'kingOfOne' | 'wideAngle';
 
@@ -45,6 +45,15 @@ export type Ability = {
   readonly power: number;
   readonly trajectory: Trajectory;
   readonly specials: readonly SpecialId[];
+  /**
+   * 限界突破 progress, 0 (not started) to 1 (complete).
+   *
+   * Carried on the Ability rather than passed alongside it because the exit
+   * ceiling depends on it (src/core/ranks.ts exitCeiling) and src/core/bat.ts
+   * already has the Ability in hand. A second parameter threaded through the
+   * same call chain is a second thing to forget.
+   */
+  readonly breakthrough: number;
 };
 
 /**
@@ -314,25 +323,100 @@ export const specialXp = (specials: readonly SpecialId[]): number =>
 // ---------------------------------------------------------------------------
 
 /** Everything a player can do, at a given level. */
-export const abilityAt = (player: PlayerId, level: number): Ability => {
+export const abilityAt = (
+  player: PlayerId, level: number, breakthrough = 0,
+): Ability => {
   const l = Math.max(1, Math.min(MAX_LEVEL_ABILITY, Math.floor(level)));
   const f = growth(l);
+  const b = Math.max(0, Math.min(1, breakthrough));
   const start = START[player];
   const cap = CAP[player];
+  /*
+   * The limit break lifts the CAP, and the level curve then climbs to it. It is
+   * not added to the finished value.
+   *
+   * The difference matters at the seam: adding would step the power up the
+   * instant a star landed, and a batter whose distance jumps between one pitch
+   * and the next reads as a bug rather than as growth. Lifting the cap while
+   * breakthrough itself moves continuously (breakthroughForXp) means every
+   * round nudges the ball a little further, and the stars are milestones drawn
+   * over a ramp rather than the ramp itself.
+   *
+   * The cap SCALES, so the three characters keep the identities the owner asked
+   * for (令和8年7月30日): 勇樹's power cap is the scale maximum and doubles to
+   * 200, 貴也's 86 goes to 172, 敦司's 70 to 140. Flattening everyone to 200
+   * would end the limit break with three identical batters.
+   */
+  const powerCap = cap.power * (1 + BREAK_POWER_GAIN * b);
   return {
     meet: clampAbility(start.meet + (cap.meet - start.meet) * f),
-    power: clampAbility(start.power + (cap.power - start.power) * f),
+    power: clampPower(start.power + (powerCap - start.power) * f),
     trajectory: trajectoryAt(l),
     specials: specialsAt(l),
+    breakthrough: b,
   };
 };
 
 /** Convenience: the ability set implied by an experience total. */
 export const abilityForXp = (player: PlayerId, xp: number): Ability =>
-  abilityAt(player, levelOf(xp));
+  abilityAt(player, levelOf(xp), breakthroughForXp(xp));
 
 /** The letters, for the select screen. */
 export const abilityRanks = (a: Ability): { readonly meet: string; readonly power: string } => ({
   meet: rankOf(a.meet),
   power: rankOf(a.power),
 });
+
+// ---------------------------------------------------------------------------
+// 限界突破
+// ---------------------------------------------------------------------------
+
+/**
+ * How much the power CAP is multiplied by at full limit break. 【要判断】
+ *
+ * 1 means "doubled": the owner asked for a power maximum of 200 where the scale
+ * tops out at 100 (令和8年7月31日). Measured carry at the strongest bat and a
+ * perfectly timed swing, optimum launch angle, no wind:
+ *
+ *     power 100 -> 190.4 km/h -> 150.1 m
+ *     power 115 -> 197.4 km/h -> 155.9 m   (the old ceiling)
+ *     power 200 -> 237.1 km/h -> 186.4 m
+ *
+ * So the limit break is worth about 30 metres, not a different game: the fence
+ * is 115 m and a well-struck ball already cleared it by 41 m before any of
+ * this. Difficulty lives in the timing window, which the limit break does not
+ * touch (see clampPower).
+ */
+export const BREAK_POWER_GAIN = 1.0;
+
+/** Stars shown for a completed limit break. Display only; the ramp is smooth. */
+export const BREAK_STARS = 5;
+
+/**
+ * Experience per star, on top of everything level 99 cost. 【調整可】
+ *
+ * Level 99 is about 347,000 experience, so five stars at 90,000 is a tail
+ * slightly longer than the whole ladder that precedes it. That is the intent:
+ * a limit break that arrives in an evening is not one. At the twenty thousand
+ * a strong late-game round pays, a star is four or five rounds.
+ */
+export const BREAK_XP_PER_STAR = 90_000;
+
+/** Limit-break progress for an experience total, 0..1. */
+export const breakthroughForXp = (xp: number): number => {
+  const base = xpToReach(MAX_LEVEL_ABILITY);
+  const span = BREAK_STARS * BREAK_XP_PER_STAR;
+  if (span <= 0) return 0;
+  return Math.max(0, Math.min(1, (xp - base) / span));
+};
+
+/** Whole stars earned, 0..BREAK_STARS. */
+export const starsForXp = (xp: number): number =>
+  Math.floor(breakthroughForXp(xp) * BREAK_STARS + 1e-9);
+
+/** Progress through the current star, 0..1, for the level bar past 99. */
+export const starProgress = (xp: number): number => {
+  const b = breakthroughForXp(xp) * BREAK_STARS;
+  if (b >= BREAK_STARS) return 1;
+  return b - Math.floor(b);
+};

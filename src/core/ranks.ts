@@ -21,6 +21,10 @@
  * Pure (PROMPT.md 2).
  */
 
+// constants.ts imports nothing, so taking the two velocity ceilings from it
+// cannot make a cycle.
+import { BREAKTHROUGH_EXIT_VELOCITY_MAX, EXIT_VELOCITY_MAX } from './constants.js';
+
 export type Rank = 'G' | 'F' | 'E' | 'D' | 'C' | 'B' | 'A' | 'S';
 
 export type Trajectory = 1 | 2 | 3 | 4;
@@ -36,6 +40,15 @@ export const ABILITY_MIN = 1;
 export const ABILITY_MAX = 100;
 
 /**
+ * The ceiling once 限界突破 is complete. 【調整可・要判断】
+ *
+ * The パワプロ scale stops at 100 and so does every rank letter; this is the
+ * owner's post-99 mode (令和8年7月31日), where the number keeps going and the
+ * letter has nothing left to say. Anything above 100 displays as S.
+ */
+export const BREAKTHROUGH_ABILITY_MAX = 200;
+
+/**
  * The highest EFFECTIVE power, once a special ability has added to it.
  *
  * 100 is the top of the displayed scale; this is the top of the arithmetic. The
@@ -44,13 +57,31 @@ export const ABILITY_MAX = 100;
  * game do exactly nothing for the player most likely to own it. パワプロ has the
  * same problem and the same answer: S1 and above are real values past 100.
  */
-export const EFFECTIVE_POWER_MAX = 115;
+/** What 世界のワン adds to the power VALUE. See SPECIAL_POWER in ability.ts. */
+export const CROWN_BONUS = 15;
+
+/** The arithmetic power ceiling before 限界突破: the scale, plus the crown. */
+export const EFFECTIVE_POWER_MAX_BASE = ABILITY_MAX + CROWN_BONUS;
+
+export const EFFECTIVE_POWER_MAX = BREAKTHROUGH_ABILITY_MAX + CROWN_BONUS;
 
 /** The best rank a player may start at, per the owner: 最低G・中間F・良いE. */
 export const START_RANK_CAP: Rank = 'E';
 
 export const clampAbility = (v: number): number =>
   Math.max(ABILITY_MIN, Math.min(ABILITY_MAX, Math.round(v)));
+
+/**
+ * Power only, and only power, may exceed 100.
+ *
+ * Meet stays on the 1-100 scale deliberately. Meet is the contact radius — the
+ * size of the target the swing has to find — so raising it does not make the
+ * ball go further, it makes the game stop asking anything. The limit break has
+ * to be felt in the distance and not in the difficulty, or there is no game
+ * left to play with the reward.
+ */
+export const clampPower = (v: number): number =>
+  Math.max(ABILITY_MIN, Math.min(BREAKTHROUGH_ABILITY_MAX, Math.round(v)));
 
 /** The letter for an ability value. */
 export const rankOf = (value: number): Rank => {
@@ -104,4 +135,19 @@ export const maxExitKmhFor = (power: number): number =>
  */
 export const BASE_LAUNCH_ANGLE: Readonly<Record<Trajectory, number>> = {
   1: 17, 2: 22, 3: 26, 4: 28,
+};
+
+/**
+ * The exit-velocity ceiling for a given limit-break progress, 0..1 [m/s].
+ *
+ * THIS IS THE PART THAT MAKES THE REWARD REAL. Raising power alone does
+ * nothing: src/core/bat.ts clamps every batted ball at the ceiling, so a
+ * batter with 200 power and the old cap hits the ball at exactly the same
+ * speed as one with 115. Rewards that quietly change nothing have shipped
+ * three times in this project already (docs/PROGRESS.md) and none of them were
+ * visible on screen — the number went up and the ball did not.
+ */
+export const exitCeiling = (breakthrough: number): number => {
+  const b = Math.max(0, Math.min(1, breakthrough));
+  return EXIT_VELOCITY_MAX + (BREAKTHROUGH_EXIT_VELOCITY_MAX - EXIT_VELOCITY_MAX) * b;
 };

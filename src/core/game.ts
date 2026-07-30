@@ -101,6 +101,8 @@ export const initialState = (
   /** The batter's level. Abilities and the opponent's speed both follow it. */
   level = 1,
   pitcher: PitcherId = DEFAULT_PITCHER,
+  /** 限界突破 progress, 0..1. Only reachable after level 99. */
+  breakthrough = 0,
 ): GameState => ({
   rng: seedRng(seed),
   phase: 'ready',
@@ -119,7 +121,7 @@ export const initialState = (
   bat,
   level,
   pitcher,
-  ability: abilityAt(player, level),
+  ability: abilityAt(player, level, breakthrough),
 });
 
 /** Where the pitch is at time t, interpolated from the integrated samples. */

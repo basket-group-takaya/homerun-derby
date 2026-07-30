@@ -24,7 +24,10 @@ import type { BatId } from '../core/bats.js';
 import type { Save } from '../storage.js';
 import { batsFor } from '../storage.js';
 import { BAT_UNLOCK_LEVEL, levelOf, levelProgress, xpToNext } from '../core/level.js';
-import { abilityAt, SPECIAL_IDS, SPECIAL_LEVEL, SPECIAL_NAME, SPECIAL_TIER } from '../core/ability.js';
+import {
+  BREAK_STARS, SPECIAL_IDS, SPECIAL_LEVEL, SPECIAL_NAME, SPECIAL_TIER,
+  abilityAt, breakthroughForXp, starsForXp,
+} from '../core/ability.js';
 import { rankOf } from '../core/ranks.js';
 import type { PitcherId, PitcherSpec } from '../core/pitchers.js';
 import { PITCHERS, PITCHER_IDS, speedFactor } from '../core/pitchers.js';
@@ -201,7 +204,7 @@ const drawCard = (
   const p = PLAYERS[box.player];
   const xp = save.players[box.player].xp;
   const level = levelOf(xp);
-  const a = abilityAt(box.player, level);
+  const a = abilityAt(box.player, level, breakthroughForXp(xp));
   const r = box.h * 0.13;
 
   ctx.save();
@@ -254,6 +257,22 @@ const drawCard = (
   ctx.fillStyle = '#8fe3ff';
   ctx.fillText(`Lv.${level}`, box.x + box.w - box.h * 0.10 - ctx.measureText(`Lv.${level}`).width,
     row(0.195));
+
+  /*
+   * 限界突破 stars, under the level.
+   *
+   * Drawn only once one has been earned. A row of hollow stars on a level-3
+   * card would advertise a mode roughly three hundred thousand experience away,
+   * which is discouragement rather than information.
+   */
+  const stars = starsForXp(xp);
+  if (stars > 0) {
+    const text = '★'.repeat(stars) + '☆'.repeat(BREAK_STARS - stars);
+    ctx.font = `700 ${box.h * 0.088}px ${FONT}`;
+    ctx.fillStyle = '#ffce5c';
+    ctx.fillText(text, box.x + box.w - box.h * 0.10 - ctx.measureText(text).width,
+      row(0.305));
+  }
 
   /*
    * Rank AND number, パワプロ style.

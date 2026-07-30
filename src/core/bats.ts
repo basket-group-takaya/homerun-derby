@@ -171,12 +171,18 @@ export const isBatId = (v: unknown): v is BatId =>
  * between a good swing and a perfect one — the bug this signature exists to
  * prevent. Dividing the cap by the special's multiplier keeps the same property
  * once 世界の王's +9% is in play.
+ *
+ * `ceiling` is the limit-break dial and defaults to the human record, so every
+ * existing caller keeps the behaviour it had. This is the clamp that actually
+ * binds — the one in resolveContact is a second line of defence — and leaving
+ * it fixed would have made 限界突破 change the displayed number and nothing
+ * else.
  */
 export const effectiveMaxExit = (
-  power: number, bat: BatSpec, specialExit = 1,
+  power: number, bat: BatSpec, specialExit = 1, ceiling = EXIT_VELOCITY_MAX,
 ): number => Math.min(
   (maxExitKmhFor(power) / 3.6) * bat.exit,
-  EXIT_VELOCITY_MAX / Math.max(1, specialExit),
+  ceiling / Math.max(1, specialExit),
 );
 
 /** Experience banked from a finished round. */

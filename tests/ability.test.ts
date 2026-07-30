@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  ABILITY_MAX, ABILITY_MIN, BASE_LAUNCH_ANGLE, EFFECTIVE_POWER_MAX, RANKS,
+  ABILITY_MAX, ABILITY_MIN, BASE_LAUNCH_ANGLE, EFFECTIVE_POWER_MAX_BASE, RANKS,
   RANK_FLOOR, catchRadiusFor, maxExitKmhFor, rankIndex, rankOf,
 } from '../src/core/ranks.js';
 import {
@@ -69,14 +69,21 @@ test('more of an ability is never worth less', () => {
 
 test('the exit ceiling leaves room for the strongest bat AND the crown', () => {
   /*
-   * Measured at EFFECTIVE_POWER_MAX, not at 100. The scale a player reads tops
-   * out at 100; the arithmetic tops out fifteen higher, because 世界のワン adds
-   * to the value rather than multiplying the result. Checking 100 would leave
-   * the actual worst case — a maxed slugger holding the endgame bat with the
-   * crown — untested, and that is precisely the combination that would clamp.
+   * Measured at EFFECTIVE_POWER_MAX_BASE, not at 100. The scale a player reads
+   * tops out at 100; the arithmetic tops out fifteen higher, because 世界のワン
+   * adds to the value rather than multiplying the result. Checking 100 would
+   * leave the actual worst case — a maxed slugger holding the endgame bat with
+   * the crown — untested, and that is precisely the combination that would clamp.
+   *
+   * This asserts the ORDINARY game only. It used to measure at
+   * EFFECTIVE_POWER_MAX and that stopped being the same number when the owner
+   * authorised 限界突破 (令和8年7月31日), which deliberately goes past the human
+   * record. The property is still worth having for everything below the limit
+   * break, so it moved to the base ceiling rather than being relaxed; the
+   * broken-through case is asserted in tests/breakthrough.test.ts.
    */
   const strongest = Math.max(...Object.values(BATS).map((b) => b.exit));
-  const worst = (maxExitKmhFor(EFFECTIVE_POWER_MAX) / 3.6) * strongest;
+  const worst = (maxExitKmhFor(EFFECTIVE_POWER_MAX_BASE) / 3.6) * strongest;
   assert.ok(worst <= EXIT_VELOCITY_MAX + 1e-9,
     `the strongest possible swing reaches ${(worst * 3.6).toFixed(1)} km/h`);
   // and it should be close, or the top of the ladder is wasted
@@ -213,7 +220,7 @@ test('広角打法 rescues a late swing without widening the window', () => {
   const ball = { x: 0, y: 0.95 };
   const carry = (specials: readonly ('wideAngle')[], t: number) => {
     const c = resolveContact({
-      ability: { meet: 70, power: 70, trajectory: 3, specials },
+      ability: { meet: 70, power: 70, trajectory: 3, specials, breakthrough: 0 },
       cursor: ball, ball, timingError: t, bat: BATS.wood,
     });
     if (c.kind === 'whiff') return 0;
@@ -238,7 +245,7 @@ test('広角打法 rescues a late swing without widening the window', () => {
 test('広角打法 sends the ball the other way, and that is the point', () => {
   const ball = { x: 0, y: 0.95 };
   const c = resolveContact({
-    ability: { meet: 70, power: 70, trajectory: 3, specials: ['wideAngle'] },
+    ability: { meet: 70, power: 70, trajectory: 3, specials: ['wideAngle'], breakthrough: 0 },
     cursor: ball, ball, timingError: 0.05, bat: BATS.wood,
   });
   assert.ok(c.sprayAngle > 0, 'a late swing must still go to the opposite field');
