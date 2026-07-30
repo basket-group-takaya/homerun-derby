@@ -38,10 +38,11 @@ import {
 } from './render/camera.js';
 import type { Sprites, ViewMode } from './render/scene.js';
 import { drawScene } from './render/scene.js';
+import { DELIVERY_SECONDS } from './render/pitcher.js';
 import { drawHud, resultCardVisible } from './render/hud.js';
 import type { CutIn, Faces } from './render/screens.js';
 import {
-  cardBoxes, drawCutIn, drawShop, drawTitle, modeBox, pitcherBoxes, shopBackBox,
+  cardBoxes, dayBox, drawCutIn, drawShop, drawTitle, modeBox, pitcherBoxes, shopBackBox,
   shopListBottom, shopListTop, shopOpenBox, shopRows, shopScrollMax, soundBox,
 } from './render/screens.js';
 import { BATS, bankedPoints } from './core/bats.js';
@@ -64,18 +65,28 @@ const LOGICAL_WIDTH = 720;
 const MIN_ASPECT = 1.30;
 const MAX_ASPECT = 2.30;
 
-const WINDUP_SECONDS = 0.55;
+/**
+ * How long the pitcher's delivery takes, from first movement to release [s].
+ *
+ * 0.55 was roughly two and a half times too fast. A real delivery — gather, leg
+ * lift, the arm breaking down and back, cocking, coming over the top — takes
+ * about 1.2 to 1.5 seconds, and the whole of it was being played in half of
+ * that. The owner reported it as two separate complaints, 「1球ごとに投げる
+ * タイミングが早すぎる」 and 「投げるモーションが明らかにおかしい」, and they
+ * were the same fault: an arm moving too fast to read does not look fast, it
+ * looks broken.
+ */
+const WINDUP_SECONDS = DELIVERY_SECONDS;
 /**
  * How long the result stands before the next pitch is set up [s].
  *
  * The whole gap between two pitches is this plus RESET_SECONDS (the batter
- * unwinding) plus WINDUP_SECONDS (the pitcher gathering), so 1.25 used to make
- * 2.14 s end to end — and the owner's note on 令和8年7月31日 was that after
- * making contact the next ball arrives before you have finished watching the
- * last one. Reading a result, feeling pleased or annoyed about it, and settling
- * back in is not something that fits in a second and a quarter.
+ * unwinding) plus WINDUP_SECONDS (the pitcher's delivery). It went to 1.55 when
+ * the owner asked for a beat after contact, and came back to 1.25 when the
+ * delivery itself slowed from 0.55 s to 1.25 s — the beat is now IN the pitch,
+ * where it reads as a pitcher taking his time rather than as dead air.
  */
-const RESULT_PAUSE = 1.55;
+const RESULT_PAUSE = 1.25;
 
 /**
  * Extra time after a ball that was actually STRUCK, on top of RESULT_PAUSE.
@@ -155,9 +166,30 @@ const readInset = (side: 'paddingTop' | 'paddingBottom'): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+/**
+ * The area that is ACTUALLY VISIBLE, in CSS pixels.
+ *
+ * Not window.innerHeight. On a phone that reports the LARGE viewport — the
+ * height the page would have if the browser's toolbars were hidden — while the
+ * URL bar is still sitting on top of the bottom of it. Sizing to it puts the
+ * bottom of the game underneath the browser chrome, which is exactly the
+ * symptom the owner reported: swing on a phone and the bottom of the screen
+ * runs off the edge. It shows up on the swing specifically because the tap is
+ * what asks for fullscreen and makes the toolbars move.
+ *
+ * visualViewport is the visible area and nothing else, and it updates when the
+ * toolbars slide, when the keyboard opens, and when the user pinches.
+ */
+const viewportSize = (): { readonly w: number; readonly h: number } => {
+  const vv = window.visualViewport;
+  return {
+    w: Math.max(1, Math.round(vv ? vv.width : window.innerWidth)),
+    h: Math.max(1, Math.round(vv ? vv.height : window.innerHeight)),
+  };
+};
+
 const resize = (): void => {
-  const cssW = Math.max(1, window.innerWidth);
-  const cssH = Math.max(1, window.innerHeight);
+  const { w: cssW, h: cssH } = viewportSize();
   const aspect = Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, cssH / cssW));
   view = { width: LOGICAL_WIDTH, height: Math.round(LOGICAL_WIDTH * aspect) };
 
@@ -185,8 +217,31 @@ const resize = (): void => {
     bottom: readInset('paddingBottom') * scale,
   };
 };
+/**
+ * Re-fit now, and again after the browser has finished moving.
+ *
+ * Toolbars slide, fullscreen animates, and an orientation change is not one
+ * event but a sequence. Measuring once, at the moment the event fires, measures
+ * the middle of the transition — and then the layout is wrong until something
+ * else happens to trigger another measurement.
+ */
+const refit = (): void => {
+  resize();
+  window.setTimeout(resize, 120);
+  window.setTimeout(resize, 420);
+};
+
 window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => window.setTimeout(resize, 120));
+window.addEventListener('orientationchange', refit);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', resize);
+  // The visual viewport SCROLLS when the toolbars slide, without resizing.
+  window.visualViewport.addEventListener('scroll', resize);
+}
+document.addEventListener('fullscreenchange', refit);
+document.addEventListener('webkitfullscreenchange' as 'fullscreenchange', refit);
+// iOS fires neither of the above reliably; a first paint after load catches it.
+window.addEventListener('load', refit);
 resize();
 
 // ---------------------------------------------------------------------------
@@ -281,6 +336,33 @@ let shopScroll = 0;
  */
 let coachLeft = 0;
 let coachShown = false;
+
+/**
+ * Paused, and the two buttons the pause screen offers.
+ *
+ * A round is ten outs and there is no way to stop in the middle of one, which
+ * is fine at a desk and not fine on a phone: the game is played standing up, in
+ * a gap, and gaps end without warning. Pausing has to be reachable without
+ * hitting swing by mistake, so the button sits in the strip beside the swing
+ * button rather than anywhere a thumb travels through.
+ */
+let paused = false;
+
+const pauseButton = (): { x: number; y: number; w: number; h: number } => {
+  const b = swingButton(view, insets.bottom);
+  const size = Math.min(view.width * 0.135, b.h * 1.05);
+  return { x: view.width * 0.045, y: b.y + (b.h - size) / 2, w: size, h: size };
+};
+
+/** The two choices on the pause screen. */
+const resumeButton = (): { x: number; y: number; w: number; h: number } => ({
+  x: view.width * 0.18, y: view.height * 0.46, w: view.width * 0.64, h: view.width * 0.135,
+});
+
+const quitButton = (): { x: number; y: number; w: number; h: number } => ({
+  x: view.width * 0.18, y: view.height * 0.46 + view.width * 0.185,
+  w: view.width * 0.64, h: view.width * 0.135,
+});
 let dragFrom: { y: number; scroll: number } | null = null;
 let dragged = 0;
 let shopNoticeLeft = 0;
@@ -370,7 +452,19 @@ const doSwing = (): void => {
  * already full-screen or installed. Failure is fine — the layout is portrait
  * either way, and the CSS rotate prompt covers the rest.
  */
+/**
+ * Asked for once, not on every tap.
+ *
+ * Requesting fullscreen again while already in it is harmless but not free: on
+ * a phone it can restart the toolbar animation, which moves the visible area
+ * under the game mid-swing. Once is enough; if it was refused the first time it
+ * will be refused every time.
+ */
+let fullscreenAsked = false;
+
 const goFullscreen = (): void => {
+  if (fullscreenAsked) return;
+  fullscreenAsked = true;
   const el = document.documentElement as HTMLElement & {
     webkitRequestFullscreen?: () => Promise<void>;
   };
@@ -415,6 +509,13 @@ const titleTap = (px: number, py: number): void => {
   if (px >= m.x && px <= m.x + m.w && py >= m.y && py <= m.y + m.h) {
     roundMode = px < m.x + m.w / 2 ? 'classic' : 'arcade';
     sfx.blip(660, 0.08);
+    return;
+  }
+  const d = dayBox(view, insets);
+  if (px >= d.x && px <= d.x + d.w && py >= d.y && py <= d.y + d.h) {
+    save = { ...save, timeOfDay: px < d.x + d.w / 2 ? 'night' : 'day' };
+    storeSave(save);
+    sfx.blip(px < d.x + d.w / 2 ? 520 : 760, 0.09);
     return;
   }
   for (const box of pitcherBoxes(view, insets)) {
@@ -516,6 +617,27 @@ canvas.addEventListener('pointerdown', (e) => {
   if (uiScreen === 'shop') {
     dragFrom = { y: p.y, scroll: shopScroll };
     dragged = 0;
+    return;
+  }
+
+  const inside = (b: { x: number; y: number; w: number; h: number }): boolean =>
+    p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+
+  if (paused) {
+    if (inside(resumeButton())) { paused = false; sfx.blip(720, 0.10); return; }
+    if (inside(quitButton())) {
+      paused = false;
+      uiScreen = 'title';
+      fx.reset();
+      cutIn = null;
+      sfx.blip(420, 0.10);
+      return;
+    }
+    return;                       // anywhere else on the pause screen does nothing
+  }
+  if (state.phase !== 'roundOver' && inside(pauseButton())) {
+    paused = true;
+    sfx.blip(500, 0.09);
     return;
   }
   doSwing();
@@ -900,6 +1022,10 @@ const advance = (dt: number): void => {
     if (shopNoticeLeft <= 0) shopNotice = '';
   }
   if (uiScreen === 'title' || uiScreen === 'shop') return;
+  // Frozen, not slowed: nothing is stepped, no timer moves, and the frame is
+  // still drawn so the pause screen can sit on top of the game rather than
+  // replacing it.
+  if (paused) return;
   coachLeft = Math.max(0, coachLeft - dt);
   scoreboardFlash = Math.max(0, scoreboardFlash - dt * 1.2);
   poleFlash = Math.max(0, poleFlash - dt * 1.2);
@@ -980,6 +1106,7 @@ const render = (): void => {
     hot: streak >= 2 ? Math.min(1, (streak - 1) / 2) : 0,
     batterNumber: PLAYERS[state.player].number,
     batterName: PLAYERS[state.player].roman,
+    timeOfDay: save.timeOfDay,
     logo: logoBack,
 
   });
@@ -1025,6 +1152,74 @@ const drawSwingButton = (): void => {
   ctx.restore();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
+};
+
+/** The pause button, beside the swing button where a thumb does not travel. */
+const drawPauseButton = (): void => {
+  if (uiScreen !== 'playing' || paused) return;
+  if (state.phase === 'roundOver') return;
+  const b = pauseButton();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(16,24,40,0.72)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160,182,214,0.55)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(224,236,255,0.9)';
+  const bw = b.w * 0.10;
+  const bh = b.h * 0.34;
+  ctx.fillRect(b.x + b.w / 2 - bw * 2.1, b.y + b.h / 2 - bh / 2, bw, bh);
+  ctx.fillRect(b.x + b.w / 2 + bw * 1.1, b.y + b.h / 2 - bh / 2, bw, bh);
+  ctx.restore();
+};
+
+/** The pause screen itself: the state of play, and two ways out of it. */
+const drawPauseScreen = (): void => {
+  if (!paused || uiScreen !== 'playing') return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,10,18,0.86)';
+  ctx.fillRect(0, 0, view.width, view.height);
+
+  ctx.textAlign = 'center';
+  const cx = view.width / 2;
+  ctx.font = `800 ${view.width * 0.078}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = '#ffd76a';
+  ctx.fillText('タイム', cx, view.height * 0.30);
+
+  // What the player is coming back to, so the pause is also a scoreboard.
+  ctx.font = `700 ${view.width * 0.040}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(224,236,255,0.92)';
+  ctx.fillText(
+    `SCORE ${state.round.score}　HR ${state.round.homeRuns}　OUT ${state.round.outs}/10`,
+    cx, view.height * 0.30 + view.width * 0.075);
+  ctx.font = `600 ${view.width * 0.032}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(160,182,214,0.9)';
+  ctx.fillText(
+    `${PLAYERS[state.player].name}　Lv.${levelOf(slot().xp)}　${BATS[state.bat].name}`,
+    cx, view.height * 0.30 + view.width * 0.125);
+
+  const button = (
+    b: { x: number; y: number; w: number; h: number }, label: string, primary: boolean,
+  ): void => {
+    roundRectPath(b.x, b.y, b.w, b.h, b.h / 2);
+    ctx.fillStyle = primary ? 'rgba(255,206,92,0.95)' : 'rgba(26,38,60,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = primary ? 'rgba(255,240,200,0.9)' : 'rgba(130,156,196,0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.font = `800 ${b.h * 0.42}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle = primary ? '#2a1e08' : '#e6eefb';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2 + 1);
+    ctx.textBaseline = 'alphabetic';
+  };
+  button(resumeButton(), '再開する', true);
+  button(quitButton(), '選手選択へもどる', false);
+
+  ctx.restore();
+  ctx.textAlign = 'left';
 };
 
 /** The three things a first-time player cannot work out by looking. */
@@ -1116,6 +1311,8 @@ const drawLevelBar = (): void => {
   drawSwingButton();
   drawLevelBar();
   drawCoach();
+  drawPauseButton();
+  drawPauseScreen();
   if (cutIn) drawCutIn(ctx, view, faces, cutIn);
   fx.drawScreen(ctx, projector, view);
 };

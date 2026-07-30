@@ -126,15 +126,35 @@ export const pitcherBoxes = (view: Viewport, insets: Insets): readonly {
 };
 
 /** The mode toggle at the foot of the select screen. */
+/**
+ * The bottom row: the mode toggle and the day/night toggle, side by side.
+ *
+ * The mode toggle used to be centred and 62% of the width, which left nowhere to
+ * put a second one. Two settings the player sets before a round belong on the
+ * same line — a setting hidden on another screen is a setting nobody finds.
+ */
+const bottomRow = (view: Viewport, insets: Insets): { y: number; h: number } => ({
+  y: view.height - insets.bottom - view.width * 0.165,
+  h: view.width * 0.105,
+});
+
 export const modeBox = (view: Viewport, insets: Insets): {
   x: number; y: number; w: number; h: number;
 } => {
-  const w = view.width * 0.62;
-  const h = view.width * 0.105;
+  const row = bottomRow(view, insets);
+  return { x: view.width * 0.045, y: row.y, w: view.width * 0.52, h: row.h };
+};
+
+/** ナイター or デイゲーム. */
+export const dayBox = (view: Viewport, insets: Insets): {
+  x: number; y: number; w: number; h: number;
+} => {
+  const row = bottomRow(view, insets);
   return {
-    x: view.width / 2 - w / 2,
-    y: view.height - insets.bottom - view.width * 0.165,
-    w, h,
+    x: view.width * (0.045 + 0.52 + 0.025),
+    y: row.y,
+    w: view.width * 0.36,
+    h: row.h,
   };
 };
 
@@ -449,6 +469,25 @@ export const drawTitle = (
   ctx.fillText('CLASSIC', m.x + half / 2, m.y + m.h * 0.64);
   ctx.fillStyle = mode === 'arcade' ? '#14203a' : 'rgba(200,218,242,0.9)';
   ctx.fillText('ARCADE', m.x + half + half / 2, m.y + m.h * 0.64);
+
+  // day / night
+  const d = dayBox(view, insets);
+  roundRect(ctx, d.x, d.y, d.w, d.h, d.h / 2);
+  ctx.fillStyle = 'rgba(20,30,50,0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,146,186,0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  const night = save.timeOfDay !== 'day';
+  const dHalf = d.w / 2;
+  roundRect(ctx, (night ? d.x : d.x + dHalf) + 3, d.y + 3, dHalf - 6, d.h - 6, (d.h - 6) / 2);
+  ctx.fillStyle = night ? 'rgba(120,160,235,0.92)' : 'rgba(255,206,92,0.94)';
+  ctx.fill();
+  ctx.font = `800 ${view.width * 0.030}px ${FONT}`;
+  ctx.fillStyle = night ? '#0d1424' : 'rgba(200,218,242,0.9)';
+  ctx.fillText('ナイター', d.x + dHalf / 2, d.y + d.h * 0.63);
+  ctx.fillStyle = night ? 'rgba(200,218,242,0.9)' : '#2a1e08';
+  ctx.fillText('デイ', d.x + dHalf + dHalf / 2, d.y + d.h * 0.63);
 
   ctx.font = `500 ${view.width * 0.028}px ${FONT}`;
   ctx.fillStyle = 'rgba(140,160,192,0.8)';

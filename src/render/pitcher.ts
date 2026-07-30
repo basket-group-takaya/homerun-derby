@@ -33,6 +33,17 @@ import {
   ROUND_SIDES, drawQuads, jointQuads, limbQuads, roundLimb, taperQuads,
 } from './figure.js';
 
+/**
+ * How long the delivery takes, from first movement to release [s]. 【調整可】
+ *
+ * Lives here rather than in main.ts because it is a property of the ANIMATION,
+ * and because the only way to say whether the hand moves plausibly is metres per
+ * second — which needs both the path and the time. It was 0.55 s in the loop and
+ * nowhere in this file, so the arm was whipping round two and a half times
+ * faster than a person can throw and there was no test that could have noticed.
+ */
+export const DELIVERY_SECONDS = 1.25;
+
 /** Top of the mound, on the rubber. */
 const RUBBER: Vec3 = vec(0, 0.254, MOUND_DISTANCE);
 
@@ -83,12 +94,20 @@ const sample = (keys: readonly Key[], t: number): Vec3 => {
  * The throwing hand. The 0.82 key is not chosen, it is REQUIRED: it is where
  * src/core/pitch.ts says the ball appears, so if the hand is anywhere else the
  * ball is thrown by nobody.
+ *
+ * THE COCKED KEY IS THE ONE THAT LOOKED WRONG. It used to put the hand out to
+ * the SIDE at (0.46, 1.46, -0.46) — level with a glove hand that was itself
+ * stretched 0.62 m out in front — so at the top of the delivery the two arms
+ * formed one straight horizontal bar and he read as a scarecrow. A real cocked
+ * arm is HIGH and CLOSE: the hand finishes above the shoulder near the head with
+ * the forearm nearly vertical, and the glove arm stays bent.
  */
 const THROW_HAND: readonly Key[] = [
   { at: 0.00, v: vec(0.10, 1.18, 0.02) },     // gathered at the chest
-  { at: 0.30, v: vec(0.34, 0.78, -0.42) },    // hand breaks down and back
-  { at: 0.58, v: vec(0.46, 1.46, -0.46) },    // cocked, elbow above the shoulder
-  { at: 0.72, v: vec(0.44, 1.78, 0.30) },     // over the top
+  { at: 0.28, v: vec(0.28, 0.72, -0.30) },    // the hand breaks down and back
+  { at: 0.50, v: vec(0.40, 1.20, -0.42) },    // swinging up behind him
+  { at: 0.64, v: vec(0.36, 1.74, -0.22) },    // COCKED: high and CLOSE, forearm up
+  { at: 0.76, v: vec(0.30, 1.86, 0.36) },     // over the top
   { at: 0.82, v: vec(RELEASE_RIGHT, RELEASE_UP, RELEASE_FORWARD) },
   { at: 1.00, v: vec(-0.30, 0.72, 1.05) },    // across the body, down past the knee
 ];
@@ -96,10 +115,10 @@ const THROW_HAND: readonly Key[] = [
 /** The glove hand: points at the target, then tucks into the ribs. */
 const GLOVE_HAND: readonly Key[] = [
   { at: 0.00, v: vec(-0.06, 1.18, 0.06) },
-  { at: 0.35, v: vec(-0.30, 1.30, 0.34) },
-  { at: 0.62, v: vec(-0.36, 1.38, 0.62) },
-  { at: 0.82, v: vec(-0.34, 1.02, 0.10) },
-  { at: 1.00, v: vec(-0.30, 0.92, -0.16) },
+  { at: 0.35, v: vec(-0.24, 1.30, 0.28) },
+  { at: 0.60, v: vec(-0.30, 1.34, 0.44) },    // pointed at the plate, still bent
+  { at: 0.82, v: vec(-0.34, 1.00, 0.06) },    // yanked into the ribs at release
+  { at: 1.00, v: vec(-0.30, 0.90, -0.16) },
 ];
 
 /** The stride foot leaves the ground and lands well down the slope. */
@@ -197,16 +216,21 @@ export const pitcherQuads = (windup: number): Quad[] => {
   const throwHand = (() => { const v = sample(THROW_HAND, t); return pt(v.x, v.y, v.z); })();
   const gloveHand = (() => { const v = sample(GLOVE_HAND, t); return pt(v.x, v.y, v.z); })();
   // the throwing elbow leads high and outside; the glove elbow tucks down
-  push(jointQuads(elbowAt(shoulderThrow, throwHand, vec(-0.55, 0.72, -0.42), 0.16),
-    0.052, SKIN));
-  push(roundLimb(shoulderThrow,
-    elbowAt(shoulderThrow, throwHand, vec(-0.55, 0.72, -0.42), 0.16), 0.056, GREY));
-  push(roundLimb(
-    elbowAt(shoulderThrow, throwHand, vec(-0.55, 0.72, -0.42), 0.16), throwHand, 0.044, SKIN));
-  push(roundLimb(shoulderGlove,
-    elbowAt(shoulderGlove, gloveHand, vec(0.40, -0.70, -0.30), 0.14), 0.056, GREY));
-  push(roundLimb(
-    elbowAt(shoulderGlove, gloveHand, vec(0.40, -0.70, -0.30), 0.14), gloveHand, 0.044, SKIN));
+  /*
+   * The throwing elbow breaks OUT and BEHIND, not toward the plate.
+   *
+   * He faces -z, so his throwing side is -x; the elbow leads away from the body
+   * on that side and BACK (+z) while the arm is cocked. It used to be pushed
+   * toward home (-z), which folded the arm the wrong way across his chest.
+   */
+  const throwElbow = elbowAt(shoulderThrow, throwHand, vec(-0.60, 0.66, 0.45), 0.20);
+  push(jointQuads(throwElbow, 0.052, SKIN));
+  push(roundLimb(shoulderThrow, throwElbow, 0.056, GREY));
+  push(roundLimb(throwElbow, throwHand, 0.044, SKIN));
+  const gloveElbow = elbowAt(shoulderGlove, gloveHand, vec(0.42, -0.66, 0.20), 0.17);
+  push(jointQuads(gloveElbow, 0.050, SKIN));
+  push(roundLimb(shoulderGlove, gloveElbow, 0.056, GREY));
+  push(roundLimb(gloveElbow, gloveHand, 0.044, SKIN));
   push(roundLimb(
     add(gloveHand, vec(0, 0, 0.05)), add(gloveHand, vec(0, 0, -0.05)), 0.085, GLOVE));
 

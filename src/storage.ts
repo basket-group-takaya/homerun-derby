@@ -41,6 +41,8 @@ export type PlayerSave = {
 
 export type Save = {
   readonly players: Readonly<Record<PlayerId, PlayerSave>>;
+  /** Night game or day game. One setting for the whole app, not per player. */
+  readonly timeOfDay: 'night' | 'day';
   /** Who was batting when the game was last closed, so it resumes there. */
   readonly last: PlayerId;
   readonly bestScore: number;
@@ -58,6 +60,7 @@ export const emptySave = (): Save => ({
     yuki: freshPlayer(), takaya: freshPlayer(), atsushi: freshPlayer(),
   },
   last: 'takaya',
+  timeOfDay: 'night',
   bestScore: 0,
   bestDistance: 0,
   rounds: 0,
@@ -133,6 +136,7 @@ export const parseSave = (raw: string | null): Save => {
   return {
     players,
     last: isPlayerId(o.last) ? o.last : base.last,
+    timeOfDay: o.timeOfDay === 'day' ? 'day' : 'night',
     bestScore: num(o.bestScore),
     bestDistance: num(o.bestDistance),
     rounds: num(o.rounds),

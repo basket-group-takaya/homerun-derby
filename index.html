@@ -28,7 +28,16 @@
     margin: 0;
     padding: 0;
     width: 100%;
+
+    /* 100dvh, not 100%.
+       With position:fixed;inset:0 the body takes the LARGE viewport — the size
+       the page would be with the browser's toolbars hidden — so its bottom sits
+       underneath the URL bar. dvh is the viewport as it is right now, toolbars
+       included, and it shrinks and grows as they slide. The 100% is the
+       fallback for engines that do not know dvh; JS sizes the canvas from
+       visualViewport either way, so this is belt and braces. */
     height: 100%;
+    height: 100dvh;
     overflow: hidden;
     background: #05080f;
     color: #dfe6f2;
@@ -43,7 +52,10 @@
     -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
   }
 
   /* The canvas is the whole app. Logical size is set in JS; CSS just makes it

@@ -19,7 +19,9 @@ import type { GameState } from '../core/game.js';
 import { ballAt, battedBallAt } from '../core/game.js';
 import type { Projector, Viewport } from './camera.js';
 import type { StadiumFlags } from './stadium.js';
+import type { TimeOfDay } from './stadium.js';
 import { drawStadium } from './stadium.js';
+import { setFigureLight } from './figure.js';
 import { drawPitcher } from './pitcher.js';
 import { drawBatter } from './batter.js';
 import { RELEASE_POINT } from '../core/pitch.js';
@@ -46,6 +48,8 @@ export type Presentation = {
   readonly hot: number;
   /** Shirt number, painted on the 3D figure's back. */
   readonly batterNumber: number;
+  /** Night game or day game. */
+  readonly timeOfDay: TimeOfDay;
   /** Name lettered across his shoulders, and the company logo above it. */
   readonly batterName: string;
   readonly logo: HTMLImageElement | null;
@@ -205,7 +209,8 @@ export const drawScene = (
   view: Viewport,
   show: Presentation,
 ): void => {
-  drawStadium(ctx, p, view, show.stadium);
+  setFigureLight(show.timeOfDay === 'day');
+  drawStadium(ctx, p, view, show.stadium, show.timeOfDay);
 
   if (show.mode !== 'flight') drawPitcher(ctx, p, show.windup);
 

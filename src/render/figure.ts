@@ -40,8 +40,23 @@ export const LIGHT: Vec3 = normalize(vec(-0.42, 0.80, -0.44));
 // faces of the same box differed by too little and the figure read as a flat
 // silhouette; the whole reason for building a solid is that its faces catch the
 // light differently, and that has to be visible.
-const AMBIENT = 0.46;
-const DIFFUSE = 0.58;
+/*
+ * Ambient and diffuse, and why they are not constants any more.
+ *
+ * Under floodlights a figure is lit from a few hard sources and the shaded side
+ * goes dark; in daylight the sky is a giant soft source and the shaded side is
+ * still bright. Keeping the night values for a day game gives figures that look
+ * like cardboard cut-outs pasted onto a bright photograph — lit for a different
+ * scene, which is exactly what they would be.
+ */
+let AMBIENT = 0.46;
+let DIFFUSE = 0.58;
+
+/** Light the figures for the time of day. Called once per frame, before drawing. */
+export const setFigureLight = (day: boolean): void => {
+  AMBIENT = day ? 0.62 : 0.46;
+  DIFFUSE = day ? 0.46 : 0.58;
+};
 
 /**
  * Wrap lighting: how far the light bends round the shaded side, 0 to 1.

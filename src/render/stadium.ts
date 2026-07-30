@@ -19,20 +19,108 @@ import {
   FENCE_CENTRE, FENCE_ALLEY, FENCE_LINE,
 } from '../core/constants.js';
 
-// A dusk palette: warm horizon under a deep sky is what makes floodlights read.
-const SKY_HIGH = '#0b1430';
-const SKY_MID = '#1d3566';
-const SKY_LOW = '#4a6ea3';
-const HORIZON = '#7b8fae';
-const GRASS = '#2e7a3c';
-const GRASS_DARK = '#266a33';
-const GRASS_RIM = '#1f5a2a';
-const DIRT = '#9a6f4c';
-const DIRT_DARK = '#845c3d';
-const WALL = '#16402a';
-const WALL_TOP = '#f2d24b';
-const STAND_LOW = '#243046';
-const STAND_HIGH = '#161f30';
+/**
+ * The two times of day, requested on 令和8年7月31日.
+ *
+ * Written as two complete palettes rather than as a night palette plus a
+ * brightness multiplier. Daylight is not night turned up: the sky inverts from
+ * dark-at-the-top to light-at-the-horizon, shadows go from long and warm to
+ * short and neutral, and the floodlights stop being the light source and become
+ * grey towers. A multiplier gets none of that and produces a washed-out night.
+ *
+ * 【要確認：意匠】 The park is ours, not a copy of a real one — PROMPT.md 0/5
+ * forbids real team names and logos, and a stadium's branding is exactly that.
+ * What IS taken from 阪神甲子園球場, because they are facts about a place rather
+ * than a mark: the infield is 黒土, a blend of black soil and white sand
+ * (spring 5.5:4.5, summer 6:4), the outfield fence is dark green, the outfield
+ * grass is kept green all year by two grasses in rotation, and the ground's
+ * basic colours since 1980 are green, yellow and black.
+ * Sources: koshien.hanshin.co.jp, ja.wikipedia.org/wiki/阪神甲子園球場,
+ * read 令和8年7月31日.
+ */
+export type TimeOfDay = 'night' | 'day';
+
+type Skin = {
+  readonly skyHigh: string;
+  readonly skyMid: string;
+  readonly skyLow: string;
+  readonly horizon: string;
+  readonly grass: string;
+  readonly grassDark: string;
+  readonly grassRim: string;
+  readonly dirt: string;
+  readonly dirtDark: string;
+  readonly wall: string;
+  readonly wallTop: string;
+  readonly standLow: string;
+  readonly standHigh: string;
+  /** Are the floodlights lit? Daylight leaves them as grey towers. */
+  readonly lightsOn: boolean;
+};
+
+const SKINS: Readonly<Record<TimeOfDay, Skin>> = {
+  night: {
+    skyHigh: '#0b1430', skyMid: '#1d3566', skyLow: '#4a6ea3', horizon: '#7b8fae',
+    grass: '#2e7a3c', grassDark: '#266a33', grassRim: '#1f5a2a',
+    // 黒土: darker and browner than the orange clay most parks use
+    dirt: '#7a5539', dirtDark: '#63432c',
+    wall: '#16402a', wallTop: '#f2d24b',
+    standLow: '#243046', standHigh: '#161f30',
+    lightsOn: true,
+  },
+  day: {
+    // Sky the other way up: pale at the horizon, deep overhead.
+    skyHigh: '#2f6fc4', skyMid: '#5b98dd', skyLow: '#9cc6ef', horizon: '#d6e6f4',
+    grass: '#3f9a48', grassDark: '#35893e', grassRim: '#2b7433',
+    dirt: '#7f5a3c', dirtDark: '#69492f',
+    wall: '#1d5535', wallTop: '#f7dc5c',
+    standLow: '#5a6274', standHigh: '#414859',
+    lightsOn: false,
+  },
+};
+
+/*
+ * The active palette, as plain bindings.
+ *
+ * Module-level and mutable, which is normally the wrong shape — but every one of
+ * the two dozen draw helpers below reads these by name, and threading a palette
+ * through all of them would be a large diff for no behavioural gain. It is set
+ * once at the top of drawStadium, before anything is drawn, and read-only for
+ * the rest of the frame. The render layer still never writes game state
+ * (PROMPT.md 2); this is a drawing parameter, not a fact about the game.
+ */
+let SKY_HIGH = SKINS.night.skyHigh;
+let SKY_MID = SKINS.night.skyMid;
+let SKY_LOW = SKINS.night.skyLow;
+let HORIZON = SKINS.night.horizon;
+let GRASS = SKINS.night.grass;
+let GRASS_DARK = SKINS.night.grassDark;
+let GRASS_RIM = SKINS.night.grassRim;
+let DIRT = SKINS.night.dirt;
+let DIRT_DARK = SKINS.night.dirtDark;
+let WALL = SKINS.night.wall;
+let WALL_TOP = SKINS.night.wallTop;
+let STAND_LOW = SKINS.night.standLow;
+let STAND_HIGH = SKINS.night.standHigh;
+let LIGHTS_ON = SKINS.night.lightsOn;
+
+const applySkin = (when: TimeOfDay): void => {
+  const k = SKINS[when];
+  SKY_HIGH = k.skyHigh;
+  SKY_MID = k.skyMid;
+  SKY_LOW = k.skyLow;
+  HORIZON = k.horizon;
+  GRASS = k.grass;
+  GRASS_DARK = k.grassDark;
+  GRASS_RIM = k.grassRim;
+  DIRT = k.dirt;
+  DIRT_DARK = k.dirtDark;
+  WALL = k.wall;
+  WALL_TOP = k.wallTop;
+  STAND_LOW = k.standLow;
+  STAND_HIGH = k.standHigh;
+  LIGHTS_ON = k.lightsOn;
+};
 
 /**
  * Fill a polygon, clipped against the near plane.
@@ -179,12 +267,16 @@ const drawFloodlights = (ctx: CanvasRenderingContext2D, p: Projector): void => {
   for (const a of [-40, -20, 20, 40]) {
     const base = onFence(a, FENCE_HEIGHT + 17.5, 36);
     const top = onFence(a, FENCE_HEIGHT + 40, 36);
-    stroke(ctx, p, [base, top], '#0d1522', 5);
+    // In daylight the towers are structure, not light. Leaving the glow on is
+    // what makes a "day" mode look like a night scene with the brightness up.
+    const pylon = LIGHTS_ON ? '#0d1522' : '#7e8798';
+    stroke(ctx, p, [base, top], pylon, 5);
     const head = p.project(top);
     if (!head) continue;
     const w = Math.max(6, p.scaleAt(head.depth) * 7);
-    ctx.fillStyle = '#0d1522';
+    ctx.fillStyle = pylon;
     ctx.fillRect(head.x - w / 2, head.y - w * 0.34, w, w * 0.42);
+    if (!LIGHTS_ON) continue;
     const glow = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, w * 2.4);
     glow.addColorStop(0, 'rgba(255,246,214,0.55)');
     glow.addColorStop(1, 'rgba(255,246,214,0)');
@@ -605,7 +697,9 @@ export type StadiumFlags = {
 
 export const drawStadium = (
   ctx: CanvasRenderingContext2D, p: Projector, view: Viewport, flags: StadiumFlags,
+  when: TimeOfDay = 'night',
 ): void => {
+  applySkin(when);
   drawSky(ctx, view);
   drawStands(ctx, p);
   drawFloodlights(ctx, p);

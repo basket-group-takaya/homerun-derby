@@ -12,7 +12,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { pitcherHand, pitcherQuads, releaseError } from '../src/render/pitcher.js';
+import {
+  DELIVERY_SECONDS, pitcherHand, pitcherQuads, releaseError,
+} from '../src/render/pitcher.js';
 import { RELEASE_POINT } from '../src/core/pitch.js';
 import { MOUND_DISTANCE } from '../src/core/constants.js';
 
@@ -61,14 +63,37 @@ test('he stays on his own mound', () => {
   }
 });
 
-test('the delivery is continuous — no frame teleports the hand', () => {
-  // Linear keys can still jump if two keys share an `at`. At 60 fps a hand
-  // moving faster than about 0.35 m per frame reads as a cut, not a throw.
+test('the hand moves at a speed a person could move it', () => {
+  /*
+   * In metres per SECOND, which needs the duration as well as the path — the
+   * first version of this test measured metres per sample and could not tell a
+   * teleport from a slow-motion replay. It also passed happily while the whole
+   * delivery was running in 0.55 s, two and a half times faster than anyone can
+   * throw, because per-sample distance does not change when you speed up the
+   * clock.
+   *
+   * A pitched ball leaves at about 40 m/s and the hand is slower than the ball,
+   * so anything past 45 m/s is not an arm, it is a cut between two poses.
+   */
+  const STEPS = 240;
   let previous = pitcherHand(0);
-  for (let i = 1; i <= 60; i++) {
-    const hand = pitcherHand(i / 60);
+  let fastest = 0;
+  for (let i = 1; i <= STEPS; i++) {
+    const hand = pitcherHand(i / STEPS);
     const step = Math.hypot(hand.x - previous.x, hand.y - previous.y, hand.z - previous.z);
-    assert.ok(step < 0.35, `the hand jumped ${step.toFixed(3)} m at frame ${i}`);
+    const speed = step / (DELIVERY_SECONDS / STEPS);
+    fastest = Math.max(fastest, speed);
+    assert.ok(speed < 45,
+      `the hand reached ${speed.toFixed(0)} m/s at ${(i / STEPS).toFixed(2)} — that is a cut`);
     previous = hand;
   }
+  // ...and it has to actually whip somewhere, or it is a man miming a throw
+  assert.ok(fastest > 8, `the fastest the hand ever moves is ${fastest.toFixed(1)} m/s`);
+});
+
+test('the delivery takes as long as a delivery takes', () => {
+  // 0.55 s was the bug the owner saw as 「投げるモーションが明らかにおかしい」.
+  // An arm moving too fast to read does not look fast, it looks broken.
+  assert.ok(DELIVERY_SECONDS >= 1.0 && DELIVERY_SECONDS <= 1.8,
+    `${DELIVERY_SECONDS} s is outside what a real delivery takes`);
 });
