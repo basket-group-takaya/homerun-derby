@@ -84,11 +84,21 @@ test('every built module is precached', () => {
   }
 });
 
-test('every image the game loads is precached', () => {
+test('every image the game loads is precached, and no build input is', () => {
   const listed = new Set(precache());
   const art = walk(join(ROOT, 'assets')).filter((p) => p.endsWith('.png'));
   assert.ok(art.length > 40, `only found ${art.length} images`);
   for (const path of art) {
+    // assets/src holds the original sheets tools/extract_sprites.py reads. They
+    // are build INPUT: the game never loads them, they are the largest files in
+    // the tree, and a deployment that ships only what the game needs does not
+    // have them. Precaching them put four megabytes on every phone for nothing
+    // and — addAll being atomic — would have taken the whole cache down with it
+    // the first time the site was built from the game's files alone.
+    if (path.startsWith('assets/src/')) {
+      assert.equal(listed.has(path), false, `${path} is build input, not a game asset`);
+      continue;
+    }
     assert.ok(listed.has(path), `${path} is not precached`);
   }
 });

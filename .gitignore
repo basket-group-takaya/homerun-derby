@@ -10,3 +10,4 @@ assets/face/
 
 # ただし接地基準点は成果物として追跡する（M2/M4 で目視補正する対象）
 !assets/player/anchors.json
+.publish/

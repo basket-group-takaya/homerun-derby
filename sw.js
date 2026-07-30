@@ -13,7 +13,7 @@
  * one round trip when online and still works fully offline.
  */
 
-const CACHE = 'bhrd-v6';
+const CACHE = 'bhrd-v7';
 
 /** How long to wait for the network before falling back to the cache [ms]. */
 const NETWORK_TIMEOUT_MS = 2500;
@@ -117,10 +117,6 @@ const PRECACHE = [
   './assets/player/yuki/swing_2.png',
   './assets/player/yuki/swing_3.png',
   './assets/player/yuki/swing_4.png',
-  './assets/src/atsushi_sheet.png',
-  './assets/src/faces.png',
-  './assets/src/takaya_sheet.png',
-  './assets/src/yuki_sheet.png',
 ];
 // <<< generated
 }

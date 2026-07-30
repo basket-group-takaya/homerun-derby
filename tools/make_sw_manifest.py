@@ -35,10 +35,17 @@ def collect():
         sys.exit("dist/src has no .js — run `npm run build` first")
     out += ["./" + p for p in js]
 
+    # assets/src holds the original sheets the extractor reads. The game never
+    # loads them, they are the largest files in the tree, and shipping them would
+    # put four megabytes into every phone's cache for nothing. Worse: they are
+    # build INPUT, so a deployment that ships only what the game needs would not
+    # have them, and addAll being atomic means the whole cache would fail.
     art = sorted(
         p.relative_to(ROOT).as_posix()
         for p in (ROOT / "assets").rglob("*")
-        if p.is_file() and p.suffix.lower() in {".png", ".json"}
+        if p.is_file()
+        and p.suffix.lower() in {".png", ".json"}
+        and "assets/src/" not in p.relative_to(ROOT).as_posix()
     )
     out += ["./" + p for p in art]
     return out
