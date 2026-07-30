@@ -65,7 +65,40 @@ const MIN_ASPECT = 1.30;
 const MAX_ASPECT = 2.30;
 
 const WINDUP_SECONDS = 0.55;
-const RESULT_PAUSE = 1.25;
+/**
+ * How long the result stands before the next pitch is set up [s].
+ *
+ * The whole gap between two pitches is this plus RESET_SECONDS (the batter
+ * unwinding) plus WINDUP_SECONDS (the pitcher gathering), so 1.25 used to make
+ * 2.14 s end to end — and the owner's note on 令和8年7月31日 was that after
+ * making contact the next ball arrives before you have finished watching the
+ * last one. Reading a result, feeling pleased or annoyed about it, and settling
+ * back in is not something that fits in a second and a quarter.
+ */
+const RESULT_PAUSE = 1.55;
+
+/**
+ * Extra time after a ball that was actually STRUCK, on top of RESULT_PAUSE.
+ *
+ * A swing and a miss is over the moment it happens. A batted ball is not: the
+ * camera has travelled downfield, the ball has landed, a number has come up,
+ * and the eye has to come back to the plate before anything else can be asked
+ * of it. That return trip is what the owner was missing.
+ */
+const CONTACT_SETTLE = 0.75;
+
+/** And a home run gets longer still. It is the thing the game is about. */
+const HOME_RUN_SETTLE = 0.9;
+
+/**
+ * The shortest the wait can be cut to by an impatient tap [s].
+ *
+ * NOT zero, which is what it was. With one button, tapping is the only thing a
+ * player ever does, so tapping again after a hit is a reflex rather than a
+ * request — and it was skipping the entire pause and firing the next pitch at
+ * once. A tap may still hurry the game along; it may no longer erase the beat.
+ */
+const MIN_PAUSE_AFTER_TAP = 0.45;
 /**
  * How long the bat takes to travel from the shoulder to the follow-through [s].
  *
@@ -324,7 +357,8 @@ const doSwing = (): void => {
   if (state.phase === 'pitching') {
     swingNow();
   } else if (state.phase === 'result' || state.phase === 'ready') {
-    pauseLeft = 0; // skip the wait and bring the next pitch now
+    // Hurry the wait along, but never erase it. See MIN_PAUSE_AFTER_TAP.
+    pauseLeft = Math.min(pauseLeft, MIN_PAUSE_AFTER_TAP);
   }
 };
 
@@ -675,7 +709,8 @@ const reactToTransitions = (): void => {
       && state.flightTime >= state.swing.hangTime - 1e-6) {
     landed = true;
     if (previousEvent) announceLanding(previousEvent);
-    pauseLeft = RESULT_PAUSE + (previousEvent?.outcome === 'homeRun' ? 0.9 : 0);
+    pauseLeft = RESULT_PAUSE + CONTACT_SETTLE
+      + (previousEvent?.outcome === 'homeRun' ? HOME_RUN_SETTLE : 0);
   }
 
   // slow the descent of a home run so the landing can be seen
