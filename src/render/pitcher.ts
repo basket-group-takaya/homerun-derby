@@ -168,9 +168,24 @@ export const pitcherQuads = (windup: number): Quad[] => {
   const sideways = halfSpan * open;          // toward first / third
   const alongView = halfSpan * (1 - open);   // toward home / second
 
+  /*
+   * THE THROWING SHOULDER IS AT -x, AND IT WAS AT +x.
+   *
+   * He faces home, so forward is -z and his right is cross(up, forward) =
+   * (-1, 0, 0): the third-base side. The hands get this right because pt()
+   * negates for them. These two lines did not — they were written as raw world
+   * offsets with a positive x — so as he opened up, his throwing shoulder swung
+   * across to the FIRST-BASE side while his hand stayed on the third-base side,
+   * and the arm dragged across his chest. Watching it, he looks left-handed for
+   * the whole wind-up and then flips right-handed in the last few frames, which
+   * is exactly how the owner described it on 令和8年7月31日.
+   *
+   * Pinned by tests/pitcher.test.ts: the throwing shoulder must never cross to
+   * the glove side, at any point in the delivery.
+   */
   const chest = add(hips, vec(0, 0.34, 0));
-  const shoulderThrow = add(chest, vec(sideways, 0.03, alongView));
-  const shoulderGlove = add(chest, vec(-sideways, 0.03, -alongView));
+  const shoulderThrow = add(chest, vec(-sideways, 0.03, alongView));
+  const shoulderGlove = add(chest, vec(sideways, 0.03, -alongView));
   const head = add(chest, vec(0, 0.30, 0));
 
   // ----- legs
@@ -254,6 +269,27 @@ export const drawPitcher = (
   // foreground would swallow him.
   drawOutline(ctx, p, quads, 'rgb(12,16,28)', 0.020);
   drawQuads(ctx, p, quads);
+};
+
+/**
+ * Where his two shoulders are, for a given point in the delivery.
+ *
+ * Exported so the handedness is a test rather than something to notice on
+ * screen. It took an owner watching the animation to catch it the first time.
+ */
+export const pitcherShoulders = (windup: number): {
+  readonly throwing: Vec3; readonly glove: Vec3;
+} => {
+  const t = Math.min(1, Math.max(0, windup));
+  const h = sample(HIPS, t);
+  const hips = pt(h.x, h.y, h.z);
+  const chest = add(hips, vec(0, 0.34, 0));
+  const open = openness(t);
+  const halfSpan = 0.21;
+  return {
+    throwing: add(chest, vec(-halfSpan * open, 0.03, halfSpan * (1 - open))),
+    glove: add(chest, vec(halfSpan * open, 0.03, -halfSpan * (1 - open))),
+  };
 };
 
 /** The world point his hand is at, for a given point in the delivery. */

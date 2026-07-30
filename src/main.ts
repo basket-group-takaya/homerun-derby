@@ -33,7 +33,7 @@ import { GRADE_LABEL, TARGET_LABEL } from './core/round.js';
 import { vec } from './core/vec.js';
 import type { Camera, Viewport } from './render/camera.js';
 import {
-  makeProjector, PITCH_CAMERA, cameraAfterContact, shakeCamera,
+  makeProjector, PITCH_CAMERA, cameraAfterContact, ease, lerpCamera, shakeCamera,
   CUT_HOLD_END, CUT_PULLBACK_END,
 } from './render/camera.js';
 import type { Sprites, ViewMode } from './render/scene.js';
@@ -134,6 +134,21 @@ const SWING_ARC_SECONDS = 0.30;
  * right way round — it is what a pitcher does.
  */
 const RESET_SECONDS = 0.34;
+
+/**
+ * How long the camera takes to come back from the outfield to the plate [s].
+ *
+ * There was no such thing, and that is the whole of the owner's complaint on
+ * 令和8年7月31日: 「画面が切り替わった瞬間に、もうピッチャーが投げてしまって
+ * います」. The camera followed the ball for the entire result pause and snapped
+ * home at the exact instant the next pitch started, because the only thing that
+ * moved it back was the swing being cleared — which startPitch does. Cut and
+ * delivery happened on the same frame, so nobody ever saw a wind-up.
+ *
+ * The order now is: hold the result, FLY THE CAMERA HOME, let the batter reset,
+ * let the pitcher gather, throw. Each waits for the one before it.
+ */
+const CAMERA_RETURN_SECONDS = 0.65;
 
 const POSES = [
   'stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4',
@@ -306,6 +321,11 @@ let swingArc = -1;
 let resetLeft = 0;
 /** Where the swing had got to when the unwind started, so it eases from there. */
 let resetFrom = 1;
+/** Counts down while the camera flies back from the outfield to the plate. */
+let returnLeft = 0;
+let returnFrom: Camera | null = null;
+/** Set once the camera is home, so it stays there until the next ball is struck. */
+let cameraHome = false;
 let scoreboardFlash = 0;
 let poleFlash = 0;
 let landed = false;
@@ -915,11 +935,17 @@ const sinceContact = (): number | null => {
 };
 
 const cameraNow = (): Camera => {
+  if (cameraHome) return PITCH_CAMERA;
   const t = sinceContact();
   if (t === null) return PITCH_CAMERA;
   const swing = state.swing;
   if (!swing) return PITCH_CAMERA;
-  return cameraAfterContact(t, battedBallAt(swing, t));
+  const following = cameraAfterContact(t, battedBallAt(swing, t));
+  if (returnFrom) {
+    const f = ease(1 - Math.max(0, returnLeft) / CAMERA_RETURN_SECONDS);
+    return lerpCamera(returnFrom, PITCH_CAMERA, f);
+  }
+  return following;
 };
 
 // ---------------------------------------------------------------------------
@@ -1049,7 +1075,18 @@ const advance = (dt: number): void => {
   if (state.phase === 'ready' || state.phase === 'result') {
     pauseLeft -= dt;
     if (pauseLeft <= 0) {
-      // 1. the batter unwinds to his stance
+      // 1. the camera comes home from wherever the ball took it
+      if (!cameraHome && returnFrom === null && sinceContact() !== null) {
+        returnFrom = cameraNow();
+        returnLeft = CAMERA_RETURN_SECONDS;
+      }
+      if (returnLeft > 0) {
+        returnLeft -= dt;
+        if (returnLeft <= 0) { cameraHome = true; returnFrom = null; }
+        return;
+      }
+      cameraHome = true;
+      // 2. the batter unwinds to his stance
       if (swingArc >= 0 && resetLeft <= 0) resetLeft = RESET_SECONDS;
       if (resetLeft > 0) {
         resetLeft -= dt;
@@ -1057,11 +1094,14 @@ const advance = (dt: number): void => {
         swingArc = resetFrom * f;
         if (resetLeft <= 0) { swingArc = -1; resetLeft = 0; }
       } else {
-        // 2. only then does the pitcher gather, and 3. throw
+        // 3. only then does the pitcher gather, and 4. throw
         windup += dt;
         if (windup >= WINDUP_SECONDS) {
           windup = 0;
           swingArc = -1;
+          cameraHome = false;
+          returnFrom = null;
+          returnLeft = 0;
           state = step(state, { kind: 'pitch' });
           sfx.blip(300, 0.05);
         }

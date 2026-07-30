@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  DELIVERY_SECONDS, pitcherHand, pitcherQuads, releaseError,
+  DELIVERY_SECONDS, pitcherHand, pitcherQuads, pitcherShoulders, releaseError,
 } from '../src/render/pitcher.js';
 import { RELEASE_POINT } from '../src/core/pitch.js';
 import { MOUND_DISTANCE } from '../src/core/constants.js';
@@ -96,4 +96,55 @@ test('the delivery takes as long as a delivery takes', () => {
   // An arm moving too fast to read does not look fast, it looks broken.
   assert.ok(DELIVERY_SECONDS >= 1.0 && DELIVERY_SECONDS <= 1.8,
     `${DELIVERY_SECONDS} s is outside what a real delivery takes`);
+});
+
+test('he is right-handed at every point in the delivery, not just at the end', () => {
+  /*
+   * The owner watched the animation and said the pitcher looked left-handed
+   * until just before he let go. He was right, and it was a sign.
+   *
+   * Facing home means forward is -z, so his right is cross(up, forward) =
+   * (-1, 0, 0). The hands were built through pt(), which negates correctly. The
+   * SHOULDERS were written as raw world offsets with a positive x, so as he
+   * opened up his throwing shoulder swung to the first-base side while his hand
+   * stayed on the third-base side — the arm crossed his chest, and the last few
+   * frames snapped it back.
+   *
+   * Testing only the release point would have passed: RELEASE_POINT.x is
+   * negative and always was. The failure lived in the middle of the motion,
+   * which is the part no single number describes.
+   */
+  /*
+   * Measured against each other, not against world x = 0. At the set position
+   * his whole body stands a couple of centimetres to the third-base side of the
+   * rubber, so an absolute test fails on a fact about where he is standing
+   * rather than on which arm he throws with — which is what the first version
+   * of this assertion did.
+   */
+  let separated = 0;
+  for (let i = 0; i <= 100; i++) {
+    const t = i / 100;
+    const s = pitcherShoulders(t);
+    assert.ok(s.throwing.x <= s.glove.x + 1e-9,
+      `at ${t.toFixed(2)} the throwing shoulder (x=${s.throwing.x.toFixed(3)}) has `
+      + `crossed the glove shoulder (x=${s.glove.x.toFixed(3)})`);
+    if (s.glove.x - s.throwing.x > 0.20) separated++;
+  }
+  assert.ok(separated > 20,
+    'the shoulders never open up: he should finish square to the plate');
+});
+
+test('the arm never crosses the body: hand and shoulder stay on the same side', () => {
+  // The visible consequence of the sign error, stated directly. From the point
+  // the arm has broken out of the glove, the hand and the shoulder that drives
+  // it are both on the third-base side.
+  for (let i = 25; i <= 82; i++) {
+    const t = i / 100;
+    const hand = pitcherHand(t);
+    const shoulder = pitcherShoulders(t).throwing;
+    assert.ok(hand.x <= 0.02,
+      `at ${t.toFixed(2)} the throwing hand is at x=${hand.x.toFixed(3)}`);
+    assert.ok(shoulder.x <= 0.02,
+      `at ${t.toFixed(2)} the throwing shoulder is at x=${shoulder.x.toFixed(3)}`);
+  }
 });
