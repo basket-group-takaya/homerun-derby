@@ -33,7 +33,7 @@ import { GRADE_LABEL, TARGET_LABEL } from './core/round.js';
 import { vec } from './core/vec.js';
 import type { Camera, Viewport } from './render/camera.js';
 import {
-  makeProjector, PITCH_CAMERA, cameraAfterContact, ease, lerpCamera, shakeCamera,
+  makeProjector, PITCH_CAMERA, cameraAfterContact, shakeCamera,
   CUT_HOLD_END, CUT_PULLBACK_END,
 } from './render/camera.js';
 import type { Sprites, ViewMode } from './render/scene.js';
@@ -64,6 +64,16 @@ const TICK = 1 / 60;
 const LOGICAL_WIDTH = 720;
 const MIN_ASPECT = 1.30;
 const MAX_ASPECT = 2.30;
+
+/**
+ * How much finer than the display to render, and the ceiling on it. 【調整可】
+ *
+ * 1.15 is enough headroom for diagonal edges to anti-alias without the cost of
+ * a full 2x. The cap stops a very large desktop window from asking for a canvas
+ * that no phone would ever need and that would halve the frame rate to draw.
+ */
+const RENDER_SUPERSAMPLE = 1.15;
+const MAX_RENDER_SCALE = 3;
 
 /**
  * How long the pitcher's delivery takes, from first movement to release [s].
@@ -136,19 +146,22 @@ const SWING_ARC_SECONDS = 0.30;
 const RESET_SECONDS = 0.34;
 
 /**
- * How long the camera takes to come back from the outfield to the plate [s].
+ * How long everyone stands still after the camera has cut back [s].
  *
- * There was no such thing, and that is the whole of the owner's complaint on
- * 令和8年7月31日: 「画面が切り替わった瞬間に、もうピッチャーが投げてしまって
- * います」. The camera followed the ball for the entire result pause and snapped
- * home at the exact instant the next pitch started, because the only thing that
- * moved it back was the swing being cleared — which startPitch does. Cut and
- * delivery happened on the same frame, so nobody ever saw a wind-up.
+ * The camera used to FLY back from the outfield over 0.65 s. The owner watched
+ * it and said the trip itself was not wanted — 「距離を見てからバッターボックス
+ * に戻る演出は、なしでいい」 — but that the pitcher then started too soon.
  *
- * The order now is: hold the result, FLY THE CAMERA HOME, let the batter reset,
- * let the pitcher gather, throw. Each waits for the one before it.
+ * So the journey is gone and the time went into standing still instead. A cut
+ * is instant, and then nothing happens for about two beats: the batter is in
+ * the box, the pitcher is on the mound, and neither moves. That reads as a
+ * pitcher taking his time, which a camera move never did — it read as the game
+ * making the player wait for a transition.
+ *
+ * The order is now: hold the result, cut, batter resets, EVERYBODY WAITS,
+ * pitcher gathers, throw. Each waits for the one before it.
  */
-const CAMERA_RETURN_SECONDS = 0.65;
+const SET_PAUSE = 1.1;
 
 const POSES = [
   'stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4',
@@ -208,10 +221,6 @@ const resize = (): void => {
   const aspect = Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, cssH / cssW));
   view = { width: LOGICAL_WIDTH, height: Math.round(LOGICAL_WIDTH * aspect) };
 
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(view.width * dpr);
-  canvas.height = Math.round(view.height * dpr);
-
   // Fit, do not stretch. The logical aspect is clamped to [1.30, 2.30] so that
   // the composition stays sane on any handset; when the real window falls
   // outside that range, filling it would squash the scene non-uniformly — which
@@ -223,13 +232,35 @@ const resize = (): void => {
   canvas.style.height = `${drawH}px`;
   canvas.style.marginLeft = `${(cssW - drawW) / 2}px`;
   canvas.style.marginTop = `${(cssH - drawH) / 2}px`;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  /*
+   * THE BACKING STORE IS SIZED FROM WHAT IS DISPLAYED, NOT FROM THE LOGICAL SIZE.
+   *
+   * It used to be `view.width * min(2, dpr)`, which sounds right and is not: the
+   * logical size is 720 wide whatever the screen, and the canvas is then
+   * STRETCHED by CSS to whatever the window can give it. On a 935-px-wide window
+   * at dpr 1 that meant drawing 720 pixels and blowing them up to 935 — a
+   * measured supersample of 0.77, i.e. the game was rendering at 77% of the
+   * resolution it was being shown at and the browser was interpolating the rest.
+   * That is a direct, measurable cause of the softness the owner is asking about,
+   * and no amount of art fixes it.
+   *
+   * The right number is (displayed CSS pixels x device pixel ratio), which is the
+   * real pixel grid the game lands on, plus a little headroom so diagonal edges
+   * have somewhere to anti-alias.
+   */
+  const dpr = window.devicePixelRatio || 1;
+  const scale = Math.min(
+    MAX_RENDER_SCALE, ((drawW * dpr) / view.width) * RENDER_SUPERSAMPLE);
+  canvas.width = Math.round(view.width * scale);
+  canvas.height = Math.round(view.height * scale);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
   // CSS reports the notch in CSS pixels; convert to our logical units
-  const scale = fit === 0 ? 1 : 1 / fit;
+  const cssToLogical = fit === 0 ? 1 : 1 / fit;
   insets = {
-    top: readInset('paddingTop') * scale,
-    bottom: readInset('paddingBottom') * scale,
+    top: readInset('paddingTop') * cssToLogical,
+    bottom: readInset('paddingBottom') * cssToLogical,
   };
 };
 /**
@@ -322,8 +353,8 @@ let resetLeft = 0;
 /** Where the swing had got to when the unwind started, so it eases from there. */
 let resetFrom = 1;
 /** Counts down while the camera flies back from the outfield to the plate. */
-let returnLeft = 0;
-let returnFrom: Camera | null = null;
+/** Counts down while everyone stands set, before the pitcher starts. */
+let setLeft = 0;
 /** Set once the camera is home, so it stays there until the next ball is struck. */
 let cameraHome = false;
 let scoreboardFlash = 0;
@@ -571,6 +602,7 @@ const titleTap = (px: number, py: number): void => {
       windup = 0;
       swingArc = -1;
       resetLeft = 0;
+      setLeft = SET_PAUSE;
       uiScreen = 'playing';
       if (!coachShown) { coachShown = true; coachLeft = 6.5; }
       sfx.blip(880, 0.12);
@@ -842,7 +874,13 @@ const reactToTransitions = (): void => {
     else if (e.outcome === 'whiff') buzz(9);
     else if (e.discipline) buzz([12, 40, 12]);
     if (e.outcome === 'whiff' || e.outcome === 'take' || e.outcome === 'foul') {
+      // No set pause here. Nothing was struck, so the camera never left the
+      // plate and there is no switch to settle after — the owner's note was
+      // about 「次の画面に切り替わってから」, and on a swing and a miss there is
+      // no next screen. Adding it anyway made a round of ten misses forty
+      // seconds of mostly waiting.
       pauseLeft = RESULT_PAUSE;
+      setLeft = 0;
     }
   }
 
@@ -853,6 +891,7 @@ const reactToTransitions = (): void => {
     if (previousEvent) announceLanding(previousEvent);
     pauseLeft = RESULT_PAUSE + CONTACT_SETTLE
       + (previousEvent?.outcome === 'homeRun' ? HOME_RUN_SETTLE : 0);
+    setLeft = SET_PAUSE;
   }
 
   // slow the descent of a home run so the landing can be seen
@@ -916,6 +955,11 @@ const reactToTransitions = (): void => {
 // ---------------------------------------------------------------------------
 
 const viewMode = (): ViewMode => {
+  // cameraHome first, for the same reason cameraNow checks it first: once the
+  // cut back has happened we are looking at the plate again, and the plate view
+  // has a batter and a strike zone in it. Without this the camera came home and
+  // the batter did not — the pitcher wound up and threw to an empty box.
+  if (cameraHome) return 'pitch';
   const t = sinceContact();
   if (t === null) return 'pitch';
   return t <= CUT_HOLD_END ? 'pitch' : 'flight';
@@ -923,6 +967,7 @@ const viewMode = (): ViewMode => {
 
 /** The batter fades out as the camera pulls back, rather than popping. */
 const batterFade = (): number => {
+  if (cameraHome) return 1;          // cut back: he is standing there again
   const t = sinceContact();
   if (t === null) return 1;
   if (t <= CUT_HOLD_END) return 1;
@@ -935,17 +980,13 @@ const sinceContact = (): number | null => {
 };
 
 const cameraNow = (): Camera => {
+  // A cut, not a journey. See SET_PAUSE.
   if (cameraHome) return PITCH_CAMERA;
   const t = sinceContact();
   if (t === null) return PITCH_CAMERA;
   const swing = state.swing;
   if (!swing) return PITCH_CAMERA;
-  const following = cameraAfterContact(t, battedBallAt(swing, t));
-  if (returnFrom) {
-    const f = ease(1 - Math.max(0, returnLeft) / CAMERA_RETURN_SECONDS);
-    return lerpCamera(returnFrom, PITCH_CAMERA, f);
-  }
-  return following;
+  return cameraAfterContact(t, battedBallAt(swing, t));
 };
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1052,7 @@ if (devHooks) {
     windup = 0;
     swingArc = -1;
     resetLeft = 0;
+    setLeft = SET_PAUSE;
     uiScreen = 'playing';
     if (!coachShown) { coachShown = true; coachLeft = 6.5; }
     return state.phase;
@@ -1075,16 +1117,7 @@ const advance = (dt: number): void => {
   if (state.phase === 'ready' || state.phase === 'result') {
     pauseLeft -= dt;
     if (pauseLeft <= 0) {
-      // 1. the camera comes home from wherever the ball took it
-      if (!cameraHome && returnFrom === null && sinceContact() !== null) {
-        returnFrom = cameraNow();
-        returnLeft = CAMERA_RETURN_SECONDS;
-      }
-      if (returnLeft > 0) {
-        returnLeft -= dt;
-        if (returnLeft <= 0) { cameraHome = true; returnFrom = null; }
-        return;
-      }
+      // 1. the camera cuts home
       cameraHome = true;
       // 2. the batter unwinds to his stance
       if (swingArc >= 0 && resetLeft <= 0) resetLeft = RESET_SECONDS;
@@ -1093,15 +1126,16 @@ const advance = (dt: number): void => {
         const f = Math.max(0, resetLeft / RESET_SECONDS);
         swingArc = resetFrom * f;
         if (resetLeft <= 0) { swingArc = -1; resetLeft = 0; }
+      } else if (setLeft > 0) {
+        // 3. two beats where nobody moves
+        setLeft -= dt;
       } else {
-        // 3. only then does the pitcher gather, and 4. throw
+        // 4. only then does the pitcher gather, and 5. throw
         windup += dt;
         if (windup >= WINDUP_SECONDS) {
           windup = 0;
           swingArc = -1;
           cameraHome = false;
-          returnFrom = null;
-          returnLeft = 0;
           state = step(state, { kind: 'pitch' });
           sfx.blip(300, 0.05);
         }
