@@ -15,22 +15,42 @@
 import type { Vec3 } from './vec.js';
 import { vec, add, addScaled, scale, dot, cross, length, normalize } from './vec.js';
 import type { Rng } from './rng.js';
-import { nextRange, nextBool, pick } from './rng.js';
+import { nextRange, nextBool } from './rng.js';
 import { dragCoefficient, liftCoefficient } from './physics.js';
 import {
   AIR_DENSITY, BALL_AREA, BALL_MASS, BALL_RADIUS, DT, GRAVITY,
   PLATE_HALF_WIDTH, RELEASE_DISTANCE, ZONE_BOTTOM, ZONE_TOP,
 } from './constants.js';
 
-export type PitchType = 'straight' | 'shoot' | 'slider' | 'fork' | 'change' | 'curve';
+export type PitchType = 'straight' | 'change' | 'curve' | 'fork';
 
-export const PITCH_TYPES: readonly PitchType[] =
-  ['straight', 'shoot', 'slider', 'fork', 'change', 'curve'];
+export const PITCH_TYPES: readonly PitchType[] = ['straight', 'change', 'curve', 'fork'];
 
 export const PITCH_LABEL: Readonly<Record<PitchType, string>> = {
-  straight: 'ストレート', shoot: 'シュート', slider: 'スライダー',
-  fork: 'フォーク', change: 'チェンジアップ', curve: 'カーブ',
+  straight: 'ストレート', change: 'チェンジアップ', curve: 'カーブ', fork: 'フォーク',
 };
+
+/**
+ * How often each pitch is thrown. 【調整可】
+ *
+ * Not equal, because the fork can never be hit (see FORK_IS_A_BALL): at one in
+ * four, a quarter of every round would be pitches the player is required to
+ * ignore, and a game that spends a quarter of its time telling you not to press
+ * anything is a slow game.
+ */
+const PITCH_WEIGHT: Readonly<Record<PitchType, number>> = {
+  straight: 34, change: 24, curve: 24, fork: 18,
+};
+
+/**
+ * The fork is always out of the zone, and swinging at it always misses.
+ *
+ * The owner asked for this directly. It is the one pitch you are supposed to
+ * lay off, which turns "press the button" into "press the button EXCEPT now" —
+ * and a game with only one input needs somewhere for judgement to live. Laying
+ * one off is rewarded rather than merely not punished; see round.ts.
+ */
+export const FORK_IS_A_BALL = true;
 
 type PitchSpec = {
   /** Release speed [km/h]. */
@@ -44,13 +64,22 @@ type PitchSpec = {
   readonly axis: Vec3;
 };
 
+/**
+ * Speeds are the owner's, set on 令和8年7月30日, and they are the game's main
+ * difficulty dial now that the swing is a single button: 150 against 110 is a
+ * 147 ms difference in flight time, which is what the player is actually
+ * reading. The spin axes stay sourced (docs/SPEC.md 5) so the ball still moves
+ * the way each pitch really moves.
+ *
+ * The fork's axis is the one that changed. It was vec(0.20, 0.60, 0) — 95% of
+ * the spin horizontal, so it ran sideways rather than dropping, which is not
+ * what a fork does. Low rpm and a slight TOPSPIN component let gravity win.
+ */
 export const PITCHES: Readonly<Record<PitchType, PitchSpec>> = {
-  straight: { kmh: 146.5, rpm: 2324, axis: vec(1.0, 0.35, 0) },
-  shoot: { kmh: 145.4, rpm: 2184, axis: vec(0.45, 0.90, 0) },
-  slider: { kmh: 133.8, rpm: 2431, axis: vec(0.12, -0.65, 0) },
-  fork: { kmh: 134.1, rpm: 1355, axis: vec(0.20, 0.60, 0) },
-  change: { kmh: 132.9, rpm: 1794, axis: vec(0.28, 0.85, 0) },
-  curve: { kmh: 124.4, rpm: 2582, axis: vec(-0.62, -0.55, 0) },
+  straight: { kmh: 150.0, rpm: 2324, axis: vec(1.0, 0.35, 0) },
+  change: { kmh: 110.0, rpm: 1794, axis: vec(0.28, 0.85, 0) },
+  curve: { kmh: 130.0, rpm: 2582, axis: vec(-0.62, -0.55, 0) },
+  fork: { kmh: 140.0, rpm: 1050, axis: vec(-0.30, 0.25, 0) },
 };
 
 /**
@@ -122,9 +151,16 @@ export const makePitch = (
   target: { readonly x: number; readonly y: number },
   intendedStrike: boolean,
   multiplier: 1 | 2 | 3 = 1,
+  /**
+   * Scales the release speed. The opponent's factor times the level term; see
+   * src/core/pitchers.ts. It multiplies SPEED only, never spin rate, so a slow
+   * curve still curves as much as a fast one — a pitch that stopped moving when
+   * it slowed down would read as a different pitch, not an easier one.
+   */
+  speedScale = 1,
 ): Pitch => {
   const spec = PITCHES[type];
-  const speed = spec.kmh / 3.6;
+  const speed = (spec.kmh * speedScale) / 3.6;
   const spin = scale(normalize(spec.axis), spec.rpm * RPM_TO_RAD);
   const cd = dragCoefficient(spec.rpm);
 
@@ -145,6 +181,21 @@ export const makePitch = (
   }
 
   return { type, release: RELEASE_POINT, velocity, spin, target, intendedStrike, multiplier };
+};
+
+/** Pick a pitch type by weight, keeping the PRNG pure. */
+const pickWeighted = (
+  rng: Rng, types: readonly PitchType[], weight: Readonly<Record<PitchType, number>>,
+): { rng: Rng; value: PitchType } => {
+  let total = 0;
+  for (const t of types) total += weight[t];
+  const roll = nextRange(rng, 0, total);
+  let acc = 0;
+  for (const t of types) {
+    acc += weight[t];
+    if (roll.value < acc) return { rng: roll.rng, value: t };
+  }
+  return { rng: roll.rng, value: types[types.length - 1] as PitchType };
 };
 
 /** Integrate a pitch from release until it has passed the plate. */
@@ -194,18 +245,24 @@ export const BONUS_X2_RATE = 0.14;
 export const BONUS_X3_RATE = 0.05;
 
 /** Pick a pitch. Strike 80% of the time, per docs/SPEC.md 5. */
-export const choosePitch = (rng: Rng): { rng: Rng; pitch: Pitch } => {
-  const a = pick(rng, PITCH_TYPES);
+export const choosePitch = (rng: Rng, speed = 1): { rng: Rng; pitch: Pitch } => {
+  const a = pickWeighted(rng, PITCH_TYPES, PITCH_WEIGHT);
   const b = nextBool(a.rng, 0.8);
-  const strike = b.value;
+  // The fork is never a strike. Everything downstream reads intendedStrike, so
+  // forcing it here is enough — there is no second place that has to agree.
+  const strike = a.value === 'fork' && FORK_IS_A_BALL ? false : b.value;
+  const forkBall = a.value === 'fork' && FORK_IS_A_BALL;
 
-  // strikes land inside the zone; balls miss it by a believable margin
+  // strikes land inside the zone; balls miss it by a believable margin, and a
+  // fork misses it downward, which is where a fork misses
   const xr = strike
     ? nextRange(b.rng, -PLATE_HALF_WIDTH * 0.85, PLATE_HALF_WIDTH * 0.85)
-    : nextRange(b.rng, -PLATE_HALF_WIDTH * 2.1, PLATE_HALF_WIDTH * 2.1);
+    : nextRange(b.rng, -PLATE_HALF_WIDTH * 1.1, PLATE_HALF_WIDTH * 1.1);
   const yr = strike
     ? nextRange(xr.rng, ZONE_BOTTOM + 0.05, ZONE_TOP - 0.05)
-    : nextRange(xr.rng, ZONE_BOTTOM - 0.22, ZONE_TOP + 0.22);
+    : forkBall
+      ? nextRange(xr.rng, ZONE_BOTTOM - 0.30, ZONE_BOTTOM - 0.06)
+      : nextRange(xr.rng, ZONE_BOTTOM - 0.22, ZONE_TOP + 0.22);
 
   const roll = nextRange(yr.rng, 0, 1);
   const multiplier: 1 | 2 | 3 = roll.value < BONUS_X3_RATE
@@ -214,6 +271,6 @@ export const choosePitch = (rng: Rng): { rng: Rng; pitch: Pitch } => {
 
   return {
     rng: roll.rng,
-    pitch: makePitch(a.value, { x: xr.value, y: yr.value }, strike, multiplier),
+    pitch: makePitch(a.value, { x: xr.value, y: yr.value }, strike, multiplier, speed),
   };
 };

@@ -10,6 +10,7 @@
  * tablet and a 20:9 phone.
  */
 
+import { rankOf } from '../core/ranks.js';
 import type { GameState } from '../core/game.js';
 import type { Viewport } from './camera.js';
 import { PITCH_LABEL } from '../core/pitch.js';
@@ -121,8 +122,16 @@ const drawPitchChip = (
   // over the outfield during the whole flight.
   if (!pitch || state.phase !== 'pitching') return;
   const pad = view.width * 0.045;
-  const y = view.height - insets.bottom - view.width
-    * (pitch.multiplier > 1 ? 0.335 : 0.205);
+  /*
+   * Top of the frame, not the bottom.
+   *
+   * It used to sit low, which was right until the swing button took the bottom
+   * of the screen: the chip then landed underneath it and the pitch you were
+   * being warned about was hidden by the control you had to press. Moving it up
+   * also puts the pitch name where the eye already is — following the ball down
+   * from the pitcher — rather than making it look away at the worst moment.
+   */
+  const y = insets.top + view.width * 0.215;
 
   ctx.textAlign = 'center';
   const label = PITCH_LABEL[pitch.type];
@@ -187,13 +196,35 @@ const drawTimingBar = (
   ctx.fillRect(Math.max(x, Math.min(x + w, px)) - 1.5, y - h * 0.55, 3, h * 2.1);
 };
 
+/**
+ * Is the result card on screen right now?
+ *
+ * Exported because two other things have to get out of its way. The card sits
+ * across the bottom of the frame, and once the swing button reserved the strip
+ * below it, the player chip and the level bar were pushed up into exactly the
+ * band the card occupies. Moving the card instead would put it over the strike
+ * zone, which has to stay clear.
+ */
+export const resultCardVisible = (state: GameState): boolean => {
+  const e = state.lastEvent;
+  if (!e) return false;
+  // Not during roundOver. The full-screen card already says everything this one
+  // does, and the two were drawing on top of each other.
+  if (state.phase !== 'result') return false;
+  return !(e.outcome === 'take' && !e.out && !e.discipline);
+};
+
 /** Result card, shown between pitches. */
 const drawResult = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, insets: Insets,
 ): void => {
+  if (!resultCardVisible(state)) return;
   const e = state.lastEvent;
-  if (!e || (state.phase !== 'result' && state.phase !== 'roundOver')) return;
-  if (e.outcome === 'take' && !e.out) return;
+  if (!e) return;
+  // A ball let go by is a non-event and gets no card — UNLESS it was a fork,
+  // where laying off is the correct play and pays for itself. Showing nothing
+  // there would hide the one reward the player earned by NOT pressing.
+  if (e.outcome === 'take' && !e.out && !e.discipline) return;
 
   const pad = view.width * 0.045;
   const y = view.height - insets.bottom - view.width * 0.30;
@@ -214,12 +245,13 @@ const drawResult = (
   };
   ctx.textAlign = 'left';
   ctx.font = `800 ${view.width * 0.052}px ${FONT}`;
-  ctx.fillStyle = gradeColour[e.grade] ?? '#fff';
-  ctx.fillText(GRADE_LABEL[e.grade], pad + view.width * 0.035, y + h * 0.44);
+  ctx.fillStyle = e.discipline ? '#9fe3a6' : (gradeColour[e.grade] ?? '#fff');
+  ctx.fillText(
+    e.discipline ? '見極め' : GRADE_LABEL[e.grade], pad + view.width * 0.035, y + h * 0.44);
 
   const outcomeLabel: Record<string, string> = {
     homeRun: 'ホームラン', offTheWall: 'フェンス直撃', inPlay: '凡打',
-    foul: 'ファウル', whiff: '空振り', take: '見逃し',
+    foul: 'ファウル', whiff: '空振り', take: e.discipline ? 'フォークを見極めた' : '見逃し',
   };
   ctx.font = `600 ${view.width * 0.036}px ${FONT}`;
   ctx.fillStyle = 'rgba(220,232,250,0.9)';
@@ -243,9 +275,16 @@ const drawResult = (
   ctx.textAlign = 'left';
 };
 
+/** What a finished round handed over, if anything. */
+export type LevelUp = {
+  readonly level: number;
+  readonly bats: readonly string[];
+  readonly specials: readonly string[];
+};
+
 const drawRoundOver = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, best: number,
-  banked: number, wallet: number,
+  banked: number, wallet: number, levelUp: LevelUp | null,
 ): void => {
   if (state.phase !== 'roundOver') return;
   const round = state.round;
@@ -289,16 +328,43 @@ const drawRoundOver = (
 
   // Points banked. This is the bridge to the bat shop, so it is stated plainly
   // and separately from the score: the multiplier applies to points, not score.
-  y += view.width * 0.095;
+  y += view.width * 0.090;
   ctx.font = `800 ${view.width * 0.052}px ${FONT}`;
   ctx.fillStyle = '#8fe3ff';
-  ctx.fillText(`+${banked.toLocaleString()} PT`, cx, y);
-  y += view.width * 0.052;
+  ctx.fillText(`+${banked.toLocaleString()} EXP`, cx, y);
+  y += view.width * 0.048;
   ctx.font = `600 ${view.width * 0.032}px ${FONT}`;
   ctx.fillStyle = 'rgba(170,192,222,0.9)';
-  ctx.fillText(`所持 ${wallet.toLocaleString()} PT`, cx, y);
+  ctx.fillText(`通算 ${wallet.toLocaleString()} EXP`, cx, y);
 
-  y += view.width * 0.10;
+  /*
+   * The level-up belongs INSIDE this card, not on top of it.
+   *
+   * It was a separate overlay drawn at a fixed height and it landed straight
+   * across 「ラウンド終了」, so the two most important words on the screen were
+   * illegible at exactly the moment they mattered. Anything that only ever
+   * happens at the end of a round should be laid out with the end of the round.
+   */
+  if (levelUp) {
+    y += view.width * 0.085;
+    ctx.font = `900 ${view.width * 0.078}px ${FONT}`;
+    ctx.fillStyle = '#ffd76a';
+    ctx.fillText(`LEVEL ${levelUp.level}`, cx, y);
+    for (const line of levelUp.specials) {
+      y += view.width * 0.058;
+      ctx.font = `900 ${view.width * 0.044}px ${FONT}`;
+      ctx.fillStyle = '#ffb04a';
+      ctx.fillText(`特殊能力 ${line} を習得`, cx, y);
+    }
+    if (levelUp.bats.length > 0) {
+      y += view.width * 0.050;
+      ctx.font = `800 ${view.width * 0.038}px ${FONT}`;
+      ctx.fillStyle = '#9fe3a6';
+      ctx.fillText(`${levelUp.bats.join('・')} を入手`, cx, y);
+    }
+  }
+
+  y += view.width * 0.090;
   ctx.font = `700 ${view.width * 0.042}px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.fillText('タップで選手選択へ', cx, y);
@@ -308,6 +374,7 @@ const drawRoundOver = (
 const drawPlayerChip = (
   ctx: CanvasRenderingContext2D, state: GameState, view: Viewport, insets: Insets,
 ): void => {
+  if (resultCardVisible(state)) return;
   const p = PLAYERS[state.player];
   const pad = view.width * 0.045;
   const y = view.height - insets.bottom - view.width * 0.062;
@@ -316,9 +383,19 @@ const drawPlayerChip = (
   ctx.fillText(`#${p.number} ${p.roman}`, pad, y);
   ctx.font = `600 ${view.width * 0.028}px ${FONT}`;
   ctx.fillStyle = 'rgba(160,182,214,0.75)';
+  /*
+   * The LIVE ability, not PLAYERS[...].
+   *
+   * This line went on reading the old fixed letter ranks after abilities became
+   * a function of level, so a level-40 batter was told he was still whatever he
+   * had been compiled as — 「ミート A / パワー A」 for everybody, while the
+   * select screen two taps earlier said G14 and E44.
+   */
+  const a = state.ability;
   ctx.fillText(
-    `ミート ${p.meet} / パワー ${p.power} / 弾道 ${p.trajectory}`,
-    pad, y + view.width * 0.042);
+    `ミート ${rankOf(a.meet)}${a.meet} / パワー ${rankOf(a.power)}${a.power}`
+    + ` / 弾道 ${a.trajectory}`,
+    pad, y + view.width * 0.040);
 };
 
 export const drawHud = (
@@ -329,11 +406,21 @@ export const drawHud = (
   best: number,
   banked: number,
   wallet: number,
+  /**
+   * Height reserved at the bottom for the swing button [logical px].
+   *
+   * Only the two pieces that sat UNDER the thumb move up: the timing bar and
+   * the player chip. Raising everything instead pushed the pitch-type chip into
+   * the strike zone, which is the one place on screen that has to stay clear.
+   */
+  bottomReserve = 0,
+  levelUp: LevelUp | null = null,
 ): void => {
+  const lifted: Insets = { ...insets, bottom: insets.bottom + bottomReserve };
   drawTopBar(ctx, state, view, insets);
   drawPitchChip(ctx, state, view, insets);
-  drawTimingBar(ctx, state, view, insets);
+  drawTimingBar(ctx, state, view, lifted);
   drawResult(ctx, state, view, insets);
-  drawPlayerChip(ctx, state, view, insets);
-  drawRoundOver(ctx, state, view, best, banked, wallet);
+  drawPlayerChip(ctx, state, view, lifted);
+  drawRoundOver(ctx, state, view, best, banked, wallet, levelUp);
 };

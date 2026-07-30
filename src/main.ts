@@ -27,7 +27,7 @@
 import type { GameState, Command } from './core/game.js';
 import { initialState, step, battedBallAt } from './core/game.js';
 import type { PlayerId } from './core/constants.js';
-import { PLAYER_IDS, ZONE_BOTTOM, ZONE_TOP, T_SWING } from './core/constants.js';
+import { PLAYER_IDS, PLAYERS, ZONE_BOTTOM, ZONE_TOP, T_SWING } from './core/constants.js';
 import type { RoundEvent, RoundMode } from './core/round.js';
 import { GRADE_LABEL, TARGET_LABEL } from './core/round.js';
 import { vec } from './core/vec.js';
@@ -36,17 +36,21 @@ import {
   makeProjector, PITCH_CAMERA, cameraAfterContact, shakeCamera,
   CUT_HOLD_END, CUT_PULLBACK_END,
 } from './render/camera.js';
-import type { BatAnchor, Sprites, ViewMode } from './render/scene.js';
+import type { Sprites, ViewMode } from './render/scene.js';
 import { drawScene } from './render/scene.js';
-import { drawHud } from './render/hud.js';
+import { drawHud, resultCardVisible } from './render/hud.js';
 import type { CutIn, Faces } from './render/screens.js';
 import {
-  cardBoxes, drawCutIn, drawShop, drawTitle, modeBox, shopBackBox, shopOpenBox,
-  shopRows, soundBox,
+  cardBoxes, drawCutIn, drawShop, drawTitle, modeBox, pitcherBoxes, shopBackBox,
+  shopListBottom, shopListTop, shopOpenBox, shopRows, shopScrollMax, soundBox,
 } from './render/screens.js';
 import { BATS, bankedPoints } from './core/bats.js';
-import type { Save } from './storage.js';
-import { loadSave, storeSave } from './storage.js';
+import { batsGained, levelOf, levelProgress } from './core/level.js';
+import type { PlayerSave, Save } from './storage.js';
+import { batsFor, loadSave, storeSave, withPlayer } from './storage.js';
+import type { SpecialId } from './core/ability.js';
+import { SPECIAL_NAME, specialXp, specialsAt } from './core/ability.js';
+import { PITCHERS } from './core/pitchers.js';
 import { createFx } from './render/fx.js';
 import { createSfx } from './audio/sfx.js';
 
@@ -71,6 +75,21 @@ const RESULT_PAUSE = 1.25;
  * finished early and the bat snapped back to the shoulder in shot.
  */
 const SWING_ARC_SECONDS = 0.30;
+
+/**
+ * How long the batter takes to come back to his stance after a swing [s].
+ *
+ * Without this the bat sat frozen at the end of the follow-through for the whole
+ * result pause, and then the pitcher started his wind-up with the batter still
+ * finished — so the next pitch arrived at somebody who had never reset. The
+ * owner reported it as 「空振りした後の次も、ちゃんとピッチャーもバッターも
+ * 構えてから、もう一度投げる形に」.
+ *
+ * The order now is: hold the finish while the result reads, unwind to the
+ * stance, THEN let the pitcher gather. The pitcher waiting on the batter is the
+ * right way round — it is what a pitcher does.
+ */
+const RESET_SECONDS = 0.34;
 
 const POSES = [
   'stance', 'swing_0', 'swing_1', 'swing_2', 'swing_3', 'swing_4',
@@ -162,20 +181,14 @@ const loadSprites = (id: PlayerId): Sprites => {
 for (const id of PLAYER_IDS) loadSprites(id);
 
 /**
- * Bat hinge points, fetched rather than inlined so they cannot drift away from
- * the sprites tools/make_back_camera.py generated alongside them. Until it
- * arrives — or if it never does — the batter is drawn as one piece and does not
- * swing, which is the pre-existing behaviour rather than a broken screen.
+ * The company logo, worn on the batter's back.
+ *
+ * Cut out of the character art by tools/make_logo.py and never redrawn:
+ * PROMPT.md 0-4 allows the logo but forbids altering it. Local file, so
+ * PROMPT.md 1's ban on fetching art from the network is respected.
  */
-let batAnchors: Partial<Record<PlayerId, BatAnchor>> = {};
-void fetch('assets/player/bat_anchors.json')
-  .then((r) => (r.ok ? r.json() : null))
-  .then((data: unknown) => {
-    if (data && typeof data === 'object') {
-      batAnchors = data as Partial<Record<PlayerId, BatAnchor>>;
-    }
-  })
-  .catch(() => { /* offline first load, or the file is absent */ });
+const logoBack: HTMLImageElement = new Image();
+logoBack.src = 'assets/logo_back.png';
 
 // ---------------------------------------------------------------------------
 // state
@@ -201,14 +214,42 @@ let best = save.bestScore;
 let windup = 0;
 let pauseLeft = 0;
 let swingArc = -1;
+/** Counts down while the batter unwinds back to his stance. */
+let resetLeft = 0;
+/** Where the swing had got to when the unwind started, so it eases from there. */
+let resetFrom = 1;
 let scoreboardFlash = 0;
 let poleFlash = 0;
 let landed = false;
 let lastBanked = 0;
 
+/** The slot for whoever is batting. Everything progression-shaped reads this. */
+const slot = (id: PlayerId = selected): PlayerSave => save.players[id];
+const levelFor = (id: PlayerId = selected): number => levelOf(slot(id).xp);
+/** Level-up banner state. Presentation only; the level itself lives in the save. */
+let levelUpTo = 0;
+let levelUpBats: readonly string[] = [];
+let levelUpSpecials: readonly SpecialId[] = [];
+let levelUpLeft = 0;
+
+
 type UiScreen = 'title' | 'shop' | 'playing';
 let uiScreen: UiScreen = 'title';
 let shopNotice = '';
+/** How far the bat shelf is scrolled [logical px], and the drag that moves it. */
+let shopScroll = 0;
+/**
+ * First-run coaching, shown once and then never again.
+ *
+ * The game has exactly one control and one rule that is not obvious — do not
+ * swing at the fork — and neither was written down anywhere the player would
+ * see. Three lines on the first pitch is the difference between a toy somebody
+ * can be handed and one that has to be explained.
+ */
+let coachLeft = 0;
+let coachShown = false;
+let dragFrom: { y: number; scroll: number } | null = null;
+let dragged = 0;
 let shopNoticeLeft = 0;
 let selected: PlayerId = 'takaya';
 let roundMode: RoundMode = 'classic';
@@ -232,38 +273,6 @@ const showCutIn = (variant: string, caption: string, colour: string, life = 1.6)
 // input
 // ---------------------------------------------------------------------------
 
-/**
- * Map a screen point onto the strike-zone plane.
- *
- * The zone is seen nearly face-on from the pitch camera but not exactly, so a
- * fixed ratio would drift toward the edges. The projected basis is measured each
- * time and inverted — one 2x2 solve, exact for the plane.
- */
-const screenToZone = (px: number, py: number): { x: number; y: number } | null => {
-  const p = makeProjector(PITCH_CAMERA, view);
-  const midY = (ZONE_BOTTOM + ZONE_TOP) / 2;
-  const o = p.project(vec(0, midY, 0));
-  const ax = p.project(vec(0.1, midY, 0));
-  const ay = p.project(vec(0, midY + 0.1, 0));
-  if (!o || !ax || !ay) return null;
-  const a = (ax.x - o.x) / 0.1;
-  const b = (ay.x - o.x) / 0.1;
-  const c = (ax.y - o.y) / 0.1;
-  const d = (ay.y - o.y) / 0.1;
-  const det = a * d - b * c;
-  if (Math.abs(det) < 1e-9) return null;
-  const dx = px - o.x;
-  const dy = py - o.y;
-  return { x: (d * dx - b * dy) / det, y: midY + (-c * dx + a * dy) / det };
-};
-
-/** Metres of cursor travel per logical pixel of drag, at the zone plane. */
-const dragGain = (): number => {
-  const z = screenToZone(view.width / 2 + 100, view.height / 2);
-  const o = screenToZone(view.width / 2, view.height / 2);
-  return z && o ? Math.abs(z.x - o.x) / 100 : 0.0015;
-};
-
 const toLogical = (e: PointerEvent): { x: number; y: number } => {
   const r = canvas.getBoundingClientRect();
   return {
@@ -272,22 +281,37 @@ const toLogical = (e: PointerEvent): { x: number; y: number } => {
   };
 };
 
-type Touch = { id: number; x: number; y: number; startedAt: number; moved: number };
-let aim: Touch | null = null;
-
 /**
- * What separates a tap (swing) from a drag (aim).
+ * The swing button, in logical pixels.
  *
- * In LOGICAL pixels, and the logical width is 720 while a phone is around 390
- * CSS pixels wide — so a threshold of 12 logical px is 6.5 real pixels, tighter
- * than a finger can hold still. At that value a deliberate tap registered as a
- * drag and the swing never fired. 26 logical px is about 14 real pixels, which
- * is the usual touch-slop figure.
+ * There IS a button, and the whole screen is also the button. The drawn one
+ * tells a first-time player what to do and gives the thumb a place to rest; the
+ * whole-screen fallback means a panicked tap anywhere still swings, which
+ * matters when the decision window is about 400 ms. Bottom-centre and large,
+ * because that is where a thumb already is on a phone held one-handed.
  */
-const TAP_MOVE = 26;
-const TAP_MS = 300;
+export const SWING_BAND = 0.21;
+
+export const swingButton = (
+  v: { width: number; height: number }, bottomInset: number,
+): { x: number; y: number; w: number; h: number } => {
+  const w = v.width * 0.62;
+  const h = v.width * 0.135;
+  return {
+    x: (v.width - w) / 2,
+    y: v.height - bottomInset - v.width * 0.175,
+    w,
+    h,
+  };
+};
+
+const swingNow = (): void => {
+  swingArc = 0;
+  send({ kind: 'swing' });
+};
 
 const doSwing = (): void => {
+  if (coachLeft > 0) { coachLeft = 0; return; }
   sfx.unlock();
   if (state.phase === 'roundOver') {
     // back to the select screen: choosing who bats is half the point of having
@@ -298,8 +322,7 @@ const doSwing = (): void => {
     return;
   }
   if (state.phase === 'pitching') {
-    swingArc = 0;
-    send({ kind: 'swing' });
+    swingNow();
   } else if (state.phase === 'result' || state.phase === 'ready') {
     pauseLeft = 0; // skip the wait and bring the next pitch now
   }
@@ -360,10 +383,30 @@ const titleTap = (px: number, py: number): void => {
     sfx.blip(660, 0.08);
     return;
   }
+  for (const box of pitcherBoxes(view, insets)) {
+    if (px < box.x || px > box.x + box.w || py < box.y || py > box.y + box.h) continue;
+    const spec = PITCHERS[box.pitcher];
+    if (spec.level > levelFor()) {
+      shopNotice = `${spec.name} はレベル ${spec.level} で挑戦できます`;
+      shopNoticeLeft = 2.2;
+      sfx.blip(220, 0.08);
+      return;
+    }
+    save = withPlayer(save, selected, { pitcher: box.pitcher });
+    storeSave(save);
+    state = step(state, { kind: 'selectPitcher', pitcher: box.pitcher });
+    sfx.blip(700, 0.09);
+    return;
+  }
   for (const box of cardBoxes(view, insets)) {
     if (px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h) {
       selected = box.player;
-      state = initialState(Date.now() & 0x7fffffff, selected, roundMode, save.equipped);
+      const me = slot(selected);
+      save = { ...save, last: selected };
+      storeSave(save);
+      state = initialState(
+        Date.now() & 0x7fffffff, selected, roundMode,
+        me.bat, levelOf(me.xp), me.pitcher);
       fx.reset();
       cutIn = null;
       previousEvent = null;
@@ -371,7 +414,10 @@ const titleTap = (px: number, py: number): void => {
       landed = false;
       pauseLeft = 0.35;
       windup = 0;
+      swingArc = -1;
+      resetLeft = 0;
       uiScreen = 'playing';
+      if (!coachShown) { coachShown = true; coachLeft = 6.5; }
       sfx.blip(880, 0.12);
       sfx.crowd(0.35, 1.6);
       return;
@@ -393,12 +439,16 @@ const shopTap = (px: number, py: number): void => {
     sfx.blip(420, 0.10);
     return;
   }
-  for (const row of shopRows(view, insets)) {
+  // A drag scrolls; only a tap equips. Without this the shelf equipped whatever
+  // was under the thumb at the end of every scroll.
+  if (dragged > view.width * 0.02) return;
+  if (py < shopListTop(view, insets) || py > shopListBottom(view, insets)) return;
+  for (const row of shopRows(view, insets, shopScroll)) {
     if (px < row.x || px > row.x + row.w || py < row.y || py > row.y + row.h) continue;
     const spec = BATS[row.bat];
-    if (save.bats.includes(row.bat)) {
-      if (save.equipped !== row.bat) {
-        save = { ...save, equipped: row.bat };
+    if (batsFor(save, selected).includes(row.bat)) {
+      if (slot().bat !== row.bat) {
+        save = withPlayer(save, selected, { bat: row.bat });
         storeSave(save);
         state = step(state, { kind: 'equipBat', bat: row.bat });
         shopNotice = `${spec.name} を装備しました`;
@@ -407,71 +457,53 @@ const shopTap = (px: number, py: number): void => {
       }
       return;
     }
-    if (save.points >= spec.price) {
-      save = {
-        ...save,
-        points: save.points - spec.price,
-        bats: [...save.bats, row.bat],
-        equipped: row.bat,
-      };
-      storeSave(save);
-      state = step(state, { kind: 'equipBat', bat: row.bat });
-      shopNotice = `${spec.name} を購入して装備しました`;
-      shopNoticeLeft = 2.6;
-      sfx.fanfare();
-    } else {
-      shopNotice = `ポイントが ${(spec.price - save.points).toLocaleString()} PT 足りません`;
-      shopNoticeLeft = 2.2;
-      sfx.blip(220, 0.08);
-    }
+    shopNotice = `${spec.name} はレベル ${BATS[row.bat].level} で手に入ります`;
+    shopNoticeLeft = 2.2;
+    sfx.blip(220, 0.08);
     return;
   }
 };
 
+/*
+ * Swing on POINTERDOWN, not on pointerup.
+ *
+ * There is no drag to disambiguate any more — the course is the tap position —
+ * so waiting for the finger to lift only adds latency, and the window between a
+ * pitch becoming readable and it crossing the plate is about 400 ms. The old
+ * code waited for pointerup and then checked whether the finger had moved less
+ * than a touch-slop threshold, which on a phone silently ate deliberate taps.
+ */
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   sfx.unlock();
   goFullscreen();
-  if (uiScreen === 'title') {
-    const p = toLogical(e);
-    titleTap(p.x, p.y);
-    return;
-  }
+  const p = toLogical(e);
+  if (uiScreen === 'title') { titleTap(p.x, p.y); return; }
   if (uiScreen === 'shop') {
-    const p = toLogical(e);
-    shopTap(p.x, p.y);
+    dragFrom = { y: p.y, scroll: shopScroll };
+    dragged = 0;
     return;
   }
-  if (aim === null) {
-    canvas.setPointerCapture(e.pointerId);
-    aim = { id: e.pointerId, x: toLogical(e).x, y: toLogical(e).y, startedAt: performance.now(), moved: 0 };
-  } else {
-    // a second finger while aiming: swing immediately
-    doSwing();
-  }
+  doSwing();
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  if (!aim || e.pointerId !== aim.id) return;
+  if (uiScreen !== 'shop' || !dragFrom) return;
   const p = toLogical(e);
-  const dx = p.x - aim.x;
-  const dy = p.y - aim.y;
-  aim.moved += Math.hypot(dx, dy);
-  aim.x = p.x; aim.y = p.y;
-  const g = dragGain();
-  send({ kind: 'moveCursor', x: state.cursor.x + dx * g, y: state.cursor.y - dy * g });
+  dragged = Math.max(dragged, Math.abs(p.y - dragFrom.y));
+  shopScroll = Math.max(0, Math.min(
+    shopScrollMax(view, insets), dragFrom.scroll - (p.y - dragFrom.y)));
 });
 
-const endPointer = (e: PointerEvent): void => {
-  if (!aim || e.pointerId !== aim.id) return;
-  const quick = performance.now() - aim.startedAt < TAP_MS;
-  const still = aim.moved < TAP_MOVE;
-  aim = null;
-  if (quick && still) doSwing();
-};
-canvas.addEventListener('pointerup', endPointer);
-canvas.addEventListener('pointercancel', endPointer);
-canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+canvas.addEventListener('pointerup', (e) => {
+  if (uiScreen !== 'shop' || !dragFrom) return;
+  const p = toLogical(e);
+  dragFrom = null;
+  shopTap(p.x, p.y);
+  dragged = 0;
+});
+
+canvas.addEventListener('contextmenu', (ev) => { ev.preventDefault(); });
 
 // desktop conveniences; the phone build never sees these
 const held = new Set<string>();
@@ -488,19 +520,6 @@ window.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('keyup', (e) => { held.delete(e.key.toLowerCase()); });
-
-const applyKeyboardCursor = (): void => {
-  const speed = 0.85 * TICK;
-  let dx = 0;
-  let dy = 0;
-  if (held.has('a') || held.has('arrowleft')) dx -= speed;
-  if (held.has('d') || held.has('arrowright')) dx += speed;
-  if (held.has('w') || held.has('arrowup')) dy += speed;
-  if (held.has('s') || held.has('arrowdown')) dy -= speed;
-  if (dx !== 0 || dy !== 0) {
-    send({ kind: 'moveCursor', x: state.cursor.x + dx, y: state.cursor.y + dy });
-  }
-};
 
 // ---------------------------------------------------------------------------
 // reacting to what the core just decided
@@ -610,6 +629,25 @@ const announceLanding = (e: RoundEvent): void => {
   }
 };
 
+/**
+ * Haptics.
+ *
+ * The one piece of feedback a phone has that a desktop does not, and the game
+ * had none of it. A bat crack you can FEEL is most of what separates a mobile
+ * game that feels finished from one that feels like a web page — and it costs a
+ * single call.
+ *
+ * Wrapped, because Vibration is unsupported on iOS Safari and a browser may
+ * throw if the page has never been interacted with. Silence is the correct
+ * fallback: it is a garnish, never information.
+ */
+const buzz = (pattern: number | readonly number[]): void => {
+  try {
+    const nav = navigator as Navigator & { vibrate?: (p: number | number[]) => boolean };
+    if (typeof nav.vibrate === 'function') nav.vibrate(pattern as number | number[]);
+  } catch { /* unsupported, or blocked until a gesture */ }
+};
+
 /** Watch for core transitions and fire the presentation off them. */
 let previousPhase = state.phase;
 let previousEvent: RoundEvent | null = null;
@@ -620,6 +658,13 @@ const reactToTransitions = (): void => {
     previousEvent = e;
     landed = false;
     announce(e);
+    // Contact you can feel. A home run gets a double pulse so it is a different
+    // event in the hand, not just a longer one.
+    if (e.outcome === 'homeRun') buzz([28, 60, 90]);
+    else if (e.outcome === 'offTheWall') buzz(34);
+    else if (e.outcome === 'inPlay' || e.outcome === 'foul') buzz(18);
+    else if (e.outcome === 'whiff') buzz(9);
+    else if (e.discipline) buzz([12, 40, 12]);
     if (e.outcome === 'whiff' || e.outcome === 'take' || e.outcome === 'foul') {
       pauseLeft = RESULT_PAUSE;
     }
@@ -646,22 +691,39 @@ const reactToTransitions = (): void => {
     // Bank the round. The points multiplier applies HERE, to the banked total,
     // and never to the round score on screen — otherwise the score a player
     // compares against their best would depend on which bat they held.
-    const gained = bankedPoints(state.round.score, BATS[state.bat]);
+    /*
+     * Everything that makes a round worth more is multiplied HERE, at the bank,
+     * and never into the score on screen. The score a player compares against
+     * their best has to mean the same thing in every round, or a personal best
+     * is just a record of which bat they were holding.
+     */
+    const me = slot();
+    const bonus = PITCHERS[state.pitcher].xp * specialXp(state.ability.specials);
+    const gained = bankedPoints(state.round.score, BATS[state.bat], bonus);
     lastBanked = gained;
+    const before = levelOf(me.xp);
+    const after = levelOf(me.xp + gained);
+    save = withPlayer(save, selected, { xp: me.xp + gained });
     save = {
       ...save,
-      points: save.points + gained,
-      earned: save.earned + gained,
       rounds: save.rounds + 1,
       homeRuns: save.homeRuns + state.round.homeRuns,
       bestScore: Math.max(save.bestScore, state.round.score),
       bestDistance: Math.max(save.bestDistance, Math.round(state.round.longest)),
     };
     storeSave(save);
+    if (after > before) {
+      levelUpTo = after;
+      levelUpBats = batsGained(before, after);
+      levelUpSpecials = specialsAt(after).filter((id) => !specialsAt(before).includes(id));
+      levelUpLeft = 3.6;
+      sfx.fanfare();
+    }
     if (state.round.score > best) {
       best = state.round.score;
       sfx.fanfare();
-      showCutIn('bust', '自己ベスト更新', '143,227,255', 2.2);
+      // No cut-in here. The round-over card already prints ★自己ベスト更新, and
+      // the portrait band was landing across the experience total underneath it.
     }
     sfx.crowd(0.6, 2.6);
   }
@@ -748,6 +810,28 @@ if (devHooks) {
     windup, pauseLeft, uiScreen, hitStop: fx.hitStop(), scale: fx.timeScale(),
     crossTime: state.flight?.crossTime ?? null,
   });
+  // Skip the title screen without a tap. Synthetic clicks land on the card
+  // roughly half the time — the canvas is letterboxed and the first click after
+  // a reload gets eaten focusing the page — and each miss costs a round trip.
+  (window as unknown as Record<string, unknown>).hrdPlay = (who = 'takaya'): unknown => {
+    if (!(PLAYER_IDS as readonly string[]).includes(who)) return 'unknown player';
+    selected = who as PlayerId;
+    const me = slot(selected);
+    state = initialState(
+      Date.now() & 0x7fffffff, selected, roundMode, me.bat, levelOf(me.xp), me.pitcher);
+    fx.reset();
+    cutIn = null;
+    previousEvent = null;
+    previousPhase = state.phase;
+    landed = false;
+    pauseLeft = 0.35;
+    windup = 0;
+    swingArc = -1;
+    resetLeft = 0;
+    uiScreen = 'playing';
+    if (!coachShown) { coachShown = true; coachLeft = 6.5; }
+    return state.phase;
+  };
 }
 
 const runAutoSwing = (): void => {
@@ -781,19 +865,21 @@ const advance = (dt: number): void => {
     if (shopNoticeLeft <= 0) shopNotice = '';
   }
   if (uiScreen === 'title' || uiScreen === 'shop') return;
+  coachLeft = Math.max(0, coachLeft - dt);
   scoreboardFlash = Math.max(0, scoreboardFlash - dt * 1.2);
   poleFlash = Math.max(0, poleFlash - dt * 1.2);
-  if (swingArc >= 0) {
-    // held at 1, not reset: the bat stays where the swing left it until the next
-    // pitch, instead of springing back to the shoulder while still on screen
+  if (swingArc >= 0 && resetLeft <= 0) {
+    // held at 1, not reset: the bat stays where the swing left it while the
+    // result reads, instead of springing back to the shoulder in shot. The
+    // unwind is driven separately, below, so the two never fight.
     swingArc = Math.min(1, swingArc + dt / SWING_ARC_SECONDS);
+    resetFrom = swingArc;
   }
 
   if (fx.hitStop() > 0) return;
 
   const scale = fx.timeScale();
 
-  applyKeyboardCursor();
   while (queue.length > 0) {
     const cmd = queue.shift();
     if (cmd) state = step(state, cmd);
@@ -802,12 +888,22 @@ const advance = (dt: number): void => {
   if (state.phase === 'ready' || state.phase === 'result') {
     pauseLeft -= dt;
     if (pauseLeft <= 0) {
-      windup += dt;
-      if (windup >= WINDUP_SECONDS) {
-        windup = 0;
-        swingArc = -1;
-        state = step(state, { kind: 'pitch' });
-        sfx.blip(300, 0.05);
+      // 1. the batter unwinds to his stance
+      if (swingArc >= 0 && resetLeft <= 0) resetLeft = RESET_SECONDS;
+      if (resetLeft > 0) {
+        resetLeft -= dt;
+        const f = Math.max(0, resetLeft / RESET_SECONDS);
+        swingArc = resetFrom * f;
+        if (resetLeft <= 0) { swingArc = -1; resetLeft = 0; }
+      } else {
+        // 2. only then does the pitcher gather, and 3. throw
+        windup += dt;
+        if (windup >= WINDUP_SECONDS) {
+          windup = 0;
+          swingArc = -1;
+          state = step(state, { kind: 'pitch' });
+          sfx.blip(300, 0.05);
+        }
       }
     }
   } else {
@@ -822,11 +918,11 @@ const advance = (dt: number): void => {
 const render = (): void => {
   if (uiScreen === 'title') {
     drawTitle(ctx, view, insets, faces, selected, roundMode, best, sfx.isMuted(),
-      save.points, BATS[save.equipped].name);
+      save, PITCHERS[slot().pitcher]);
     return;
   }
   if (uiScreen === 'shop') {
-    drawShop(ctx, view, insets, save, shopNotice);
+    drawShop(ctx, view, insets, save, selected, shopNotice, shopScroll);
     return;
   }
 
@@ -834,7 +930,7 @@ const render = (): void => {
   const mode = viewMode();
   const streak = state.round.streak;
 
-  drawScene(ctx, projector, state, loadSprites(state.player), view, {
+  drawScene(ctx, projector, state, view, {
     mode,
     sinceContact: sinceContact(),
     // 0 -> 0.82 while winding up, so the release pose lands exactly when the
@@ -847,10 +943,144 @@ const render = (): void => {
     stadium: { scoreboardFlash, poleFlash },
     batterFade: batterFade(),
     hot: streak >= 2 ? Math.min(1, (streak - 1) / 2) : 0,
-    batAnchor: batAnchors[state.player] ?? null,
+    batterNumber: PLAYERS[state.player].number,
+    batterName: PLAYERS[state.player].roman,
+    logo: logoBack,
+
   });
   fx.drawWorld(ctx, projector);
-  drawHud(ctx, state, view, insets, best, lastBanked, save.points);
+
+/**
+ * The swing button.
+ *
+ * Drawn even though a tap anywhere also swings. A control the player cannot see
+ * is a control they have to be told about, and this game is meant to be handed
+ * to somebody at a desk with no explanation. It also stops the thumb hovering
+ * over the middle of the screen, where it would cover the ball.
+ */
+const drawSwingButton = (): void => {
+  if (uiScreen !== 'playing') return;
+  if (state.phase === 'roundOver') return;
+  const b = swingButton(view, insets.bottom);
+  const live = state.phase === 'pitching';
+
+  ctx.save();
+  ctx.beginPath();
+  const r = b.h / 2;
+  ctx.moveTo(b.x + r, b.y);
+  ctx.arcTo(b.x + b.w, b.y, b.x + b.w, b.y + b.h, r);
+  ctx.arcTo(b.x + b.w, b.y + b.h, b.x, b.y + b.h, r);
+  ctx.arcTo(b.x, b.y + b.h, b.x, b.y, r);
+  ctx.arcTo(b.x, b.y, b.x + b.w, b.y, r);
+  ctx.closePath();
+  const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+  g.addColorStop(0, live ? 'rgba(255,206,92,0.96)' : 'rgba(92,106,134,0.55)');
+  g.addColorStop(1, live ? 'rgba(232,150,42,0.96)' : 'rgba(64,76,100,0.55)');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = live ? 'rgba(255,240,200,0.9)' : 'rgba(150,166,192,0.4)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `900 ${b.h * 0.44}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = live ? 'rgba(38,26,8,0.95)' : 'rgba(210,220,238,0.5)';
+  ctx.fillText('スイング', b.x + b.w / 2, b.y + b.h / 2 + 1);
+  ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+};
+
+/** The three things a first-time player cannot work out by looking. */
+const drawCoach = (): void => {
+  if (coachLeft <= 0 || uiScreen !== 'playing') return;
+  const fade = Math.min(1, coachLeft / 0.8);
+  const lines = [
+    'タイミングよく「スイング」をタップ',
+    'フォークは打てない。見送ると +120',
+    '打つほど経験値がたまり、レベルが上がる',
+  ];
+  const w = view.width * 0.86;
+  const h = view.width * 0.34;
+  const x = (view.width - w) / 2;
+  const y = view.height * 0.30;
+
+  ctx.save();
+  ctx.globalAlpha = fade;
+  ctx.fillStyle = 'rgba(7,12,22,0.90)';
+  roundRectPath(x, y, w, h, view.width * 0.03);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,215,106,0.55)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.font = `800 ${view.width * 0.042}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = '#ffd76a';
+  ctx.fillText('あそびかた', view.width / 2, y + h * 0.22);
+  ctx.font = `600 ${view.width * 0.034}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(224,236,255,0.95)';
+  lines.forEach((line, i) => {
+    ctx.fillText(line, view.width / 2, y + h * (0.44 + i * 0.19));
+  });
+  ctx.restore();
+  ctx.textAlign = 'left';
+};
+
+/** A rounded rectangle path. Canvas has roundRect only in newer engines. */
+const roundRectPath = (x: number, y: number, w: number, h: number, r: number): void => {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+};
+
+/** Level and the bar toward the next one, tucked under the score. */
+const drawLevelBar = (): void => {
+  if (uiScreen !== 'playing') return;
+  if (state.phase === 'roundOver') return;   // the full-screen card owns it all
+  if (resultCardVisible(state)) return;      // the card owns this strip
+  const level = levelOf(slot().xp);
+  const f = levelProgress(slot().xp);
+  // Bottom-left, under the player chip: the top-right corner already holds the
+  // home-run count and the out markers, and the bar sat on top of both.
+  const w = view.width * 0.40;
+  const h = 8;
+  // Bottom RIGHT, level with the player chip on the left. The top-right corner
+  // already holds the home-run count and the out markers.
+  const x = view.width * 0.545;
+  const y = view.height - insets.bottom - view.width * (SWING_BAND + 0.048);
+
+  ctx.save();
+  ctx.font = `800 ${view.width * 0.030}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(214,228,250,0.85)';
+  ctx.textAlign = 'left';
+  ctx.fillText(`Lv.${level}`, x, y - 7);
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = 'rgba(143,227,255,0.92)';
+  ctx.fillRect(x, y, w * f, h);
+  ctx.restore();
+};
+
+  // The bottom HUD is pushed up by the height of the swing button's band, so
+  // the timing bar and the player chip are never underneath the thumb.
+  drawHud(
+    ctx, state, view, insets, best, lastBanked, slot().xp,
+    uiScreen === 'playing' ? view.width * SWING_BAND : 0,
+    levelUpLeft > 0
+      ? {
+        level: levelUpTo,
+        bats: levelUpBats.map((id) => BATS[id as keyof typeof BATS].name),
+        specials: levelUpSpecials.map((id) => SPECIAL_NAME[id]),
+      }
+      : null);
+  drawSwingButton();
+  drawLevelBar();
+  drawCoach();
   if (cutIn) drawCutIn(ctx, view, faces, cutIn);
   fx.drawScreen(ctx, projector, view);
 };

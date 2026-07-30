@@ -16,37 +16,18 @@
 import type { Vec3 } from '../core/vec.js';
 import { vec } from '../core/vec.js';
 import type { GameState } from '../core/game.js';
-import { ballAt, battedBallAt, currentCatchRadius } from '../core/game.js';
+import { ballAt, battedBallAt } from '../core/game.js';
 import type { Projector, Viewport } from './camera.js';
 import type { StadiumFlags } from './stadium.js';
-import { drawStadium, drawPitcher } from './stadium.js';
+import { drawStadium } from './stadium.js';
+import { drawPitcher } from './pitcher.js';
+import { drawBatter } from './batter.js';
 import { RELEASE_POINT } from '../core/pitch.js';
 import {
   BALL_RADIUS, PLATE_HALF_WIDTH, ZONE_BOTTOM, ZONE_TOP,
 } from '../core/constants.js';
 
 export type Sprites = Partial<Record<string, HTMLImageElement>>;
-
-/**
- * Where a player's bat is hinged, in fractions of the sprite, plus the angle it
- * rests at. Produced by tools/make_back_camera.py, which cuts the bat out of the
- * rear art so it can be swung as its own layer.
- */
-export type BatAnchor = {
-  readonly pivotX: number;
-  readonly pivotY: number;
-  readonly restAngleDeg: number;
-};
-
-/** Absolute angle the bat reaches at the end of the follow-through [deg]. */
-/**
- * Absolute angle the bat reaches at the end of the follow-through [deg].
- *
- * Chosen so the bat is LEVEL at the moment of contact, which is 43% of the way
- * through the sweep (0.13 s of 0.30 s). Level at the ball is what the reference
- * footage shows, and it is the frame the eye actually reads.
- */
-const BAT_FOLLOW_THROUGH_DEG = 70;
 
 export type ViewMode = 'pitch' | 'flight';
 
@@ -63,8 +44,12 @@ export type Presentation = {
   readonly batterFade: number;
   /** Set while the player is on a home-run streak. docs/REFERENCE-HB2.md 9-B5. */
   readonly hot: number;
-  /** Bat hinge data for the batting player, or null until it has loaded. */
-  readonly batAnchor: BatAnchor | null;
+  /** Shirt number, painted on the 3D figure's back. */
+  readonly batterNumber: number;
+  /** Name lettered across his shoulders, and the company logo above it. */
+  readonly batterName: string;
+  readonly logo: HTMLImageElement | null;
+
 };
 
 const ZONE_MID_Y = (ZONE_BOTTOM + ZONE_TOP) / 2;
@@ -145,203 +130,59 @@ const drawPitchTrail = (
 // strike zone and meet cursor
 // ---------------------------------------------------------------------------
 
-const zoneQuad = (p: Projector): readonly { x: number; y: number }[] | null => {
-  const corners = [
-    p.project(vec(-PLATE_HALF_WIDTH, ZONE_TOP, 0)),
-    p.project(vec(PLATE_HALF_WIDTH, ZONE_TOP, 0)),
-    p.project(vec(PLATE_HALF_WIDTH, ZONE_BOTTOM, 0)),
-    p.project(vec(-PLATE_HALF_WIDTH, ZONE_BOTTOM, 0)),
-  ];
-  if (corners.some((c) => c === null)) return null;
-  return corners as { x: number; y: number }[];
-};
-
-const drawZone = (ctx: CanvasRenderingContext2D, p: Projector): void => {
-  const q = zoneQuad(p);
-  if (!q) return;
-  const [a, b, c, d] = q as [
-    { x: number; y: number }, { x: number; y: number },
-    { x: number; y: number }, { x: number; y: number },
-  ];
-
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(120,190,255,0.055)';
-  ctx.fill();
-
-  // inner thirds
-  ctx.strokeStyle = 'rgba(190,225,255,0.20)';
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 3; i++) {
-    const f = i / 3;
-    ctx.beginPath();
-    ctx.moveTo(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
-    ctx.lineTo(d.x + (c.x - d.x) * f, d.y + (c.y - d.y) * f);
-    ctx.moveTo(a.x + (d.x - a.x) * f, a.y + (d.y - a.y) * f);
-    ctx.lineTo(b.x + (c.x - b.x) * f, b.y + (c.y - b.y) * f);
-    ctx.stroke();
-  }
-
-  // corner brackets rather than a full box: the eye needs the extent, not a cage
-  ctx.strokeStyle = 'rgba(225,240,255,0.72)';
-  ctx.lineWidth = 2.5;
-  const bracket = (
-    o: { x: number; y: number }, u: { x: number; y: number }, v: { x: number; y: number },
-  ): void => {
-    ctx.beginPath();
-    ctx.moveTo(o.x + (u.x - o.x) * 0.28, o.y + (u.y - o.y) * 0.28);
-    ctx.lineTo(o.x, o.y);
-    ctx.lineTo(o.x + (v.x - o.x) * 0.28, o.y + (v.y - o.y) * 0.28);
-    ctx.stroke();
-  };
-  bracket(a, b, d); bracket(b, a, c); bracket(c, b, d); bracket(d, a, c);
-};
-
-const drawCursor = (
-  ctx: CanvasRenderingContext2D, p: Projector, state: GameState, hot: number,
-): void => {
-  const centre = p.project(vec(state.cursor.x, state.cursor.y, 0));
-  const edge = p.project(vec(state.cursor.x + currentCatchRadius(state), state.cursor.y, 0));
-  if (!centre || !edge) return;
-  const r = Math.abs(edge.x - centre.x);
-
-  const boosted = state.whiffStreak >= 2 && state.player === 'yuki';
-  const tint = boosted ? '255,198,72' : hot > 0 ? '255,150,90' : '130,225,255';
-
-  const fillGrad = ctx.createRadialGradient(centre.x, centre.y, 0, centre.x, centre.y, r);
-  fillGrad.addColorStop(0, `rgba(${tint},0.20)`);
-  fillGrad.addColorStop(1, `rgba(${tint},0.03)`);
-  ctx.fillStyle = fillGrad;
-  ctx.beginPath();
-  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = `rgba(${tint},0.95)`;
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // the sweet spot, drawn as its own ring — this is the thing being aimed
-  ctx.strokeStyle = `rgba(${tint},0.45)`;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(centre.x, centre.y, r * 0.35, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = `rgba(255,255,255,0.9)`;
-  ctx.lineWidth = 1.5;
-  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
-    ctx.beginPath();
-    ctx.moveTo(centre.x + dx * r * 0.16, centre.y + dy * r * 0.16);
-    ctx.lineTo(centre.x + dx * r * 0.42, centre.y + dy * r * 0.42);
-    ctx.stroke();
-  }
-};
-
-// ---------------------------------------------------------------------------
-// batter
-// ---------------------------------------------------------------------------
-
 /**
- * The batter as seen from behind, placed in screen space, with a swinging bat.
+ * The strike zone, drawn as the four tappable courses.
  *
- * Two layers. back_cam_body is the figure with the bat cut out of it, and
- * back_cam_bat is the bat alone; tools/make_back_camera.py produces both, plus
- * the hinge point. Rotating the bat layer about that hinge gives a real swing in
- * the pitch camera — which is what the reference game does — where before there
- * was a static sprite with a drawn streak beside it, so two bats were visible at
- * once. If either layer or the hinge is missing, this falls back to the single
- * back_cam image and no swing.
+ * The free-moving meet cursor is gone: the owner asked for the zone split into
+ * four and the course tapped (令和8年7月30日), so the thing that has to be legible
+ * is the partition, not a dot. Corner brackets rather than a full grid — the eye
+ * needs the extent and the split, and a cage over the ball is exactly what you
+ * do not want in the half second the ball is arriving.
  *
- * Deliberately not projected. At the pitch camera the batter is 2.5 m from the
- * eye, so a physically-sized sprite swallows the strike zone. In this beat the
- * batter is the frame and the zone is the subject.
+ * `armed` flashes the course the last swing chose, which is the only feedback
+ * that tells a player whether they hit the course they thought they hit.
  */
-const drawBatterFromBehind = (
-  ctx: CanvasRenderingContext2D, view: Viewport, sprites: Sprites,
-  hot: number, fade: number, arc: number, anchor: BatAnchor | null,
-): void => {
-  const ready = (i: HTMLImageElement | undefined): i is HTMLImageElement =>
-    i !== undefined && i.complete && i.naturalWidth > 0;
+/**
+ * The strike zone: one rectangle.
+ *
+ * It was four tappable quadrants until the owner replaced course selection with
+ * a single swing button on 令和8年7月30日. Nothing about the zone is an input any
+ * more, so it is drawn as information only — where a strike is — and drawn
+ * lightly, because a bright frame in the middle of the screen competes with the
+ * ball, which is the thing the player is actually reading.
+ */
+const drawZone = (ctx: CanvasRenderingContext2D, p: Projector): void => {
+  const project = (x: number, y: number): { x: number; y: number } | null => {
+    const q = p.project(vec(x, y, 0));
+    return q ? { x: q.x, y: q.y } : null;
+  };
 
-  const body = sprites.back_cam_body;
-  const bat = sprites.back_cam_bat;
-  const whole = sprites.back_cam ?? sprites.back;
-  const twoLayer = anchor !== null && ready(body) && ready(bat);
-  const base = twoLayer ? body : whole;
-  if (!ready(base) || fade <= 0.01) return;
-
-  // 52% of frame height with the feet on the bottom edge, which is what the
-  // reference footage measures at (docs/REFERENCE-HB2.md 3-1: about 51%).
-  const h = view.height * 0.52;
-  const w = (h * base.naturalWidth) / base.naturalHeight;
-  const x = view.width * 0.26 - w / 2;
-  const y = view.height * 1.00 - h;
-
-  ctx.save();
-  ctx.globalAlpha = Math.min(1, fade);
-
-  // Body turn. The rear art is a single frame, so the torso cannot be animated
-  // cel by cel, but pivoting it at the hips and leaning into the ball carries
-  // the swing along with the bat instead of leaving the body frozen.
-  const swinging = arc > 0;
-  const progress = Math.min(1, arc);
-  if (swinging) {
-    const turn = 1 - Math.pow(1 - progress, 2.2);
-    ctx.translate(x + w * 0.52, y + h * 0.93);
-    ctx.rotate(turn * 0.16);
-    const lunge = 1 + turn * 0.03;
-    ctx.scale(lunge, lunge);
-    ctx.translate(-(x + w * 0.52), -(y + h * 0.93));
+  const outer = [
+    project(-PLATE_HALF_WIDTH, ZONE_TOP), project(PLATE_HALF_WIDTH, ZONE_TOP),
+    project(PLATE_HALF_WIDTH, ZONE_BOTTOM), project(-PLATE_HALF_WIDTH, ZONE_BOTTOM),
+  ];
+  if (outer.every((q) => q !== null)) {
+    const q = outer as { x: number; y: number }[];
+    ctx.beginPath();
+    q.forEach((v, i) => (i === 0 ? ctx.moveTo(v.x, v.y) : ctx.lineTo(v.x, v.y)));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(130,200,255,0.055)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(235,245,255,0.55)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
   }
-
-  if (hot > 0) {
-    ctx.shadowColor = `rgba(255,196,96,${0.75 * hot})`;
-    ctx.shadowBlur = 34 * hot;
-    ctx.drawImage(base, x, y, w, h);
-    ctx.shadowBlur = 0;
-  }
-  ctx.drawImage(base, x, y, w, h);
-
-  if (twoLayer && anchor) {
-    const px = x + anchor.pivotX * w;
-    const py = y + anchor.pivotY * h;
-    // Linear, and tuned so the bat is level at the moment of contact rather than
-    // after it: the bat reaches the ball T_SWING (130 ms) after the input, which
-    // is 59% of the way through the 220 ms sweep.
-    const sweep = (progress: number): number =>
-      ((BAT_FOLLOW_THROUGH_DEG - anchor.restAngleDeg) * progress * Math.PI) / 180;
-
-    const drawBat = (progress: number, alpha: number): void => {
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, fade) * alpha;
-      ctx.translate(px, py);
-      ctx.rotate(sweep(progress));
-      ctx.translate(-px, -py);
-      ctx.drawImage(bat, x, y, w, h);
-      ctx.restore();
-    };
-
-    if (swinging) {
-      // ghosts behind the bat, for a motion smear made of the bat itself
-      for (let i = 3; i >= 1; i--) {
-        const back = progress - i * 0.075;
-        if (back > 0) drawBat(back, 0.10 * (4 - i) * 0.5);
-      }
-    }
-    drawBat(swinging ? progress : 0, 1);
-  }
-
-  ctx.restore();
 };
 
 /*
- * The code-drawn bat arc that used to live here is gone. It existed because the
- * rear sprite's bat could not move, and it meant two bats were on screen during
- * every swing — the sprite's, held up, and the drawn one, swinging. The bat is
- * now a real layer that rotates (see drawBatterFromBehind).
+ * The batter is no longer drawn from any sprite. src/render/batter.ts builds him
+ * as an articulated 3D figure in world space.
+ *
+ * Every previous attempt was a 2D sprite placed by hand, and every one of them
+ * broke in a new way: facing away from the pitcher, changing batter's box at
+ * contact, holding two bats at once. Those were not bugs in the placement — a
+ * sprite is a picture from one viewpoint, and the pitch camera is not that
+ * viewpoint. Nothing decides which way a solid faces except its geometry.
  */
 
 /*
@@ -361,7 +202,6 @@ export const drawScene = (
   ctx: CanvasRenderingContext2D,
   p: Projector,
   state: GameState,
-  sprites: Sprites,
   view: Viewport,
   show: Presentation,
 ): void => {
@@ -392,8 +232,14 @@ export const drawScene = (
   }
 
   if (show.mode === 'pitch') {
-    drawBatterFromBehind(
-      ctx, view, sprites, show.hot, show.batterFade, show.swingArc, show.batAnchor);
+    drawBatter(ctx, p, {
+      progress: show.swingArc,
+      player: state.player,
+      number: show.batterNumber,
+      name: show.batterName,
+      logo: show.logo,
+      hot: show.hot,
+    });
     drawZone(ctx, p);
     if (state.flight && state.phase === 'pitching') {
       drawPitchTrail(ctx, p, state);
@@ -402,7 +248,6 @@ export const drawScene = (
       // hold the ball in the pitcher's hand so the eye knows where to look
       drawBall(ctx, p, RELEASE_POINT);
     }
-    drawCursor(ctx, p, state, show.hot);
   }
 };
 

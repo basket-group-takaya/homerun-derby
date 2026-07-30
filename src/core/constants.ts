@@ -192,7 +192,7 @@ export const THETA_MAX = 48;
 export type Rank = 'S' | 'A' | 'B' | 'C' | 'D' | 'E';
 export type Trajectory = 1 | 2 | 3 | 4;
 export type PlayerId = 'yuki' | 'takaya' | 'atsushi';
-export type SkillId = 'passion' | 'tenacity' | 'aimHigh';
+export type SkillId = 'none' | 'passion' | 'tenacity' | 'aimHigh';
 
 /** Meet rank to cursor radius [m] 【調整可】. */
 export const CURSOR_RADIUS: Readonly<Record<Rank, number>> = {
@@ -234,19 +234,31 @@ export type PlayerSpec = {
   readonly skill: SkillId;
 };
 
-/** PROMPT.md 0-4 fixes meet / power / trajectory. They must never be edited. */
+/**
+ * ALL THREE PLAYERS NOW HAVE IDENTICAL ABILITY.
+ *
+ * PROMPT.md 0-4 says these ranks must never be edited. The owner overrode that
+ * on 令和8年7月30日 — 「能力は全員同じにして、レベルを上げていくとアイテムを
+ * もらえるように」 — so progression moves out of the character and into levels
+ * and bats. The spec text has not been changed; the amendment is recorded in
+ * docs/PROGRESS.md and PROMPT.md 0-4 needs updating to match.
+ *
+ * The special skills go with them. Leaving 勇樹 a +10% exit-velocity skill while
+ * calling the three equal would be equal in the ranks and unequal in play, which
+ * is worse than either. Choosing a player is now cosmetic: who you are watching.
+ */
 export const PLAYERS: Readonly<Record<PlayerId, PlayerSpec>> = {
   yuki: {
     id: 'yuki', name: '籠田 勇樹', roman: 'YUKI', number: 3,
-    meet: 'E', power: 'S', trajectory: 4, skill: 'passion',
+    meet: 'A', power: 'A', trajectory: 3, skill: 'none',
   },
   takaya: {
     id: 'takaya', name: '籠田 貴也', roman: 'TAKAYA', number: 1,
-    meet: 'B', power: 'A', trajectory: 3, skill: 'tenacity',
+    meet: 'A', power: 'A', trajectory: 3, skill: 'none',
   },
   atsushi: {
     id: 'atsushi', name: '安藤 敦司', roman: 'ATSUSHI', number: 7,
-    meet: 'S', power: 'C', trajectory: 2, skill: 'aimHigh',
+    meet: 'A', power: 'A', trajectory: 3, skill: 'none',
   },
 };
 
@@ -260,10 +272,11 @@ export const PLAYER_FLAVOUR: Readonly<Record<PlayerId, string>> = {
 };
 
 export const SKILL_NAME: Readonly<Record<SkillId, string>> = {
-  passion: '情熱の一振り', tenacity: '粘り', aimHigh: '上を狙う',
+  none: '—', passion: '情熱の一振り', tenacity: '粘り', aimHigh: '上を狙う',
 };
 
 export const SKILL_NOTE: Readonly<Record<SkillId, string>> = {
+  none: '能力は全員共通。強くなるのはバット',
   passion: 'ジャストミートで初速+10%。2連続空振りの次はカーソルが広がる',
   tenacity: 'ファウルは1ラウンド3回までアウトにならない',
   aimHigh: 'カーソルの高さが打ち出し角に与える影響が1.5倍',

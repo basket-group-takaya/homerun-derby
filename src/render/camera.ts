@@ -177,7 +177,11 @@ export const PITCH_CAMERA: Camera = {
   // 34 degrees is the portrait compromise: a 90-degree horizontal angle would
   // need a 120-degree vertical one on a 9:20 screen. At 34 the strike zone is
   // about 27% of the width, which is close to what the reference gives.
-  eye: vec(-0.10, 1.30, -2.60),
+  // z is far enough back that the batter — now a real 3D figure standing at
+  // x=-0.72 — comes out at 51% of frame height, which is what the reference
+  // footage measures (docs/REFERENCE-HB2.md 3-1). At -2.60 he was 87% and
+  // covered the strike zone.
+  eye: vec(-0.10, 1.32, -5.05),
   target: vec(-0.10, 1.30, 9.00),
   vfov: 26,
   hfov: 34,

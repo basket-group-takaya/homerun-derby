@@ -5,10 +5,11 @@
   "description": "BASKET HOME RUN DERBY - browser home run derby. TypeScript + Canvas 2D, zero runtime dependencies.",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && python tools/make_sw_manifest.py",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test \"dist/tests/*.test.js\"",
-    "extract": "python tools/extract_sprites.py"
+    "extract": "python tools/extract_sprites.py",
+    "serve": "python -m http.server 8123"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

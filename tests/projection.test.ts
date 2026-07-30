@@ -14,6 +14,7 @@ import {
 } from '../src/render/camera.js';
 import { vec } from '../src/core/vec.js';
 import { RELEASE_POINT } from '../src/core/pitch.js';
+import { STANCE } from '../src/render/batter.js';
 import {
   PLATE_HALF_WIDTH, ZONE_BOTTOM, ZONE_TOP, FENCE_CENTRE, MOUND_DISTANCE, FENCE_HEIGHT,
 } from '../src/core/constants.js';
@@ -130,19 +131,57 @@ test('the pitch camera puts the strike zone near the middle of frame', () => {
     `zone centre y is ${c.y.toFixed(0)}, expected the lower-middle band`);
 });
 
-test('the pitch camera shows the zone large enough to aim inside', () => {
+test('the pitch camera shows the zone big enough to READ, and face-on', () => {
+  // The requirement changed when the input did. A free-moving cursor had to be
+  // placed precisely inside the drawn box, so the box had to be large; the four
+  // courses are chosen by which side of the zone centre a thumb lands on, and
+  // those regions extend across the whole frame. What the drawn zone must now do
+  // is be legible and be seen square-on, not be a large target.
   const p = makeProjector(PITCH_CAMERA, VIEW);
   const tl = p.project(vec(-PLATE_HALF_WIDTH, ZONE_TOP, 0));
   const br = p.project(vec(PLATE_HALF_WIDTH, ZONE_BOTTOM, 0));
   assert.ok(tl && br);
   const w = br.x - tl.x;
   const h = br.y - tl.y;
-  assert.ok(w > 140, `zone only ${w.toFixed(0)} px wide; the side view already gave 69`);
-  assert.ok(h > 150, `zone only ${h.toFixed(0)} px tall`);
-  // face-on, so it must be close to the real 0.432 x 0.463 m aspect
+  assert.ok(w > 90, `zone only ${w.toFixed(0)} px wide — the split would not read`);
+  assert.ok(h > 95, `zone only ${h.toFixed(0)} px tall`);
   const aspect = w / h;
   assert.ok(aspect > 0.8 && aspect < 1.1,
     `zone aspect ${aspect.toFixed(2)} — the zone is no longer seen face-on`);
+});
+
+/*
+ * The four-course separability test is gone with the four courses. The owner
+ * replaced course selection with a single swing button on 令和8年7月30日, so
+ * there is nothing on the zone left to aim at and nothing to keep apart.
+ */
+
+test('the 3D batter is framed consistently, measured against the frame WIDTH', () => {
+  // Against the WIDTH, not the height. Camera.hfov pins the horizontal angle, so
+  // the batter's pixel height is the same on every handset while the frame height
+  // is not — "half the frame height" would mean something different on a 16:9
+  // tablet and a 20:9 phone. The reference figure of about 51% comes from
+  // landscape footage (docs/REFERENCE-HB2.md 3-1) and does not transfer to a
+  // portrait frame; what transfers is how much of the frame's narrow dimension he
+  // occupies. This assertion is aspect-invariant, which is the point.
+  const p = makeProjector(PITCH_CAMERA, VIEW);
+  const feet = p.project(vec(STANCE.x, 0, STANCE.z));
+  const head = p.project(vec(STANCE.x, 1.78, STANCE.z));
+  assert.ok(feet && head);
+  const fraction = (feet.y - head.y) / VIEW.width;
+  assert.ok(fraction > 0.55 && fraction < 0.80,
+    `batter is ${(fraction * 100).toFixed(0)}% of frame WIDTH, expected 55-80%`);
+  // and it really is aspect-invariant
+  const tallP = makeProjector(PITCH_CAMERA, TALL);
+  const tallFeet = tallP.project(vec(STANCE.x, 0, STANCE.z));
+  const tallHead = tallP.project(vec(STANCE.x, 1.78, STANCE.z));
+  assert.ok(tallFeet && tallHead);
+  assert.ok(Math.abs((tallFeet.y - tallHead.y) - (feet.y - head.y)) < 0.5,
+    'the batter changed size between aspect ratios');
+  // and he must be clearly LEFT of the zone, never on top of it
+  const zone = p.project(vec(0, ZONE_MID_Y, 0));
+  assert.ok(zone && head.x < zone.x - 80,
+    'the batter must sit well left of the strike zone');
 });
 
 test('the strike zone is the same width on a short phone and a tall one', () => {

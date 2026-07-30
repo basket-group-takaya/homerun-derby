@@ -187,10 +187,27 @@ test('a foul that rings the scoreboard pays something but is still an out', () =
   assert.equal(round.homeRuns, 0);
 });
 
-test('ARCADE pays for balls that stay in the park; CLASSIC does not', () => {
-  const inPlay = { contact: contact({ kind: 'good' }), field: field({ outcome: 'inPlay', distance: 90 }), multiplier: 1 };
-  assert.equal(applySwing(fresh(), inPlay).event.gained, 0);
-  assert.ok(applySwing(newRound('arcade', false), inPlay).event.gained > 0);
+test('both modes pay for distance, and ARCADE pays more', () => {
+  /*
+   * CLASSIC used to pay nothing for a ball that stayed in the park.
+   *
+   * That stopped working the moment abilities started at G to E with 弾道1: a
+   * level-1 batter's best swing carries about 75 m into a 100 m fence, so he
+   * would finish ten outs on a score of zero, earn no experience, and never
+   * reach level 2. A ladder whose first rung cannot be reached is not a ladder.
+   * It is also how the source scores — パワプロ's ホームランアタック pays for
+   * 飛距離, not only for home runs.
+   */
+  const inPlay = {
+    contact: contact({ kind: 'good' }),
+    field: field({ outcome: 'inPlay', distance: 90 }),
+    multiplier: 1,
+  };
+  const classic = applySwing(fresh(), inPlay);
+  const arcade = applySwing(newRound('arcade', false), inPlay);
+  assert.ok(classic.event.gained > 0, 'CLASSIC must pay something, or level 1 is a dead end');
+  assert.ok(arcade.event.gained > classic.event.gained, 'ARCADE should still pay more');
+  assert.ok(classic.event.out, 'it is still an out in CLASSIC');
 });
 
 test('mode does not change how many outs a ball costs', () => {

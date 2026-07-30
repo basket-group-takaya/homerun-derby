@@ -17,10 +17,17 @@
 
 import type { PlayerId } from '../core/constants.js';
 import {
-  PLAYERS, PLAYER_IDS, PLAYER_FLAVOUR, SKILL_NAME, SKILL_NOTE,
+  PLAYERS, PLAYER_IDS, PLAYER_FLAVOUR,
 } from '../core/constants.js';
 import type { RoundMode } from '../core/round.js';
 import type { BatId } from '../core/bats.js';
+import type { Save } from '../storage.js';
+import { batsFor } from '../storage.js';
+import { BAT_UNLOCK_LEVEL, levelOf, levelProgress, xpToNext } from '../core/level.js';
+import { abilityAt, SPECIAL_IDS, SPECIAL_LEVEL, SPECIAL_NAME, SPECIAL_TIER } from '../core/ability.js';
+import { rankOf } from '../core/ranks.js';
+import type { PitcherId, PitcherSpec } from '../core/pitchers.js';
+import { PITCHERS, PITCHER_IDS, speedFactor } from '../core/pitchers.js';
 import { BATS, BAT_IDS } from '../core/bats.js';
 import type { Viewport } from './camera.js';
 
@@ -73,7 +80,7 @@ export type CardBox = {
 export const cardBoxes = (view: Viewport, insets: Insets): readonly CardBox[] => {
   const pad = view.width * 0.045;
   const top = insets.top + view.height * 0.258;
-  const bottom = view.height - insets.bottom - view.width * 0.20;
+  const bottom = view.height - insets.bottom - view.width * 0.395;
   const gap = view.width * 0.028;
   const h = (bottom - top - gap * 2) / 3;
   return PLAYER_IDS.map((player, i) => ({
@@ -94,6 +101,28 @@ export const soundBox = (view: Viewport, insets: Insets): {
   const w = view.width * 0.20;
   const h = view.width * 0.085;
   return { x: view.width - w - view.width * 0.045, y: insets.top + view.width * 0.030, w, h };
+};
+
+/**
+ * The four opponents, in a row above the mode toggle.
+ *
+ * On the select screen rather than behind a menu, because who you face changes
+ * both the difficulty and the pay — 「相手が強いとポイントを稼ぎやすくて
+ * レベルが上がりやすい」 — so it is a decision taken at the same moment as
+ * choosing a batter, not a setting.
+ */
+export const pitcherBoxes = (view: Viewport, insets: Insets): readonly {
+  pitcher: PitcherId; x: number; y: number; w: number; h: number;
+}[] => {
+  const pad = view.width * 0.045;
+  const gap = view.width * 0.018;
+  const h = view.width * 0.135;
+  const total = view.width - pad * 2;
+  const w = (total - gap * (PITCHER_IDS.length - 1)) / PITCHER_IDS.length;
+  const y = view.height - insets.bottom - view.width * 0.345;
+  return PITCHER_IDS.map((pitcher, i) => ({
+    pitcher, x: pad + i * (w + gap), y, w, h,
+  }));
 };
 
 /** The mode toggle at the foot of the select screen. */
@@ -147,8 +176,12 @@ const wrap = (
 
 const drawCard = (
   ctx: CanvasRenderingContext2D, box: CardBox, faces: Faces, selected: boolean,
+  save: Save,
 ): void => {
   const p = PLAYERS[box.player];
+  const xp = save.players[box.player].xp;
+  const level = levelOf(xp);
+  const a = abilityAt(box.player, level);
   const r = box.h * 0.13;
 
   ctx.save();
@@ -197,29 +230,78 @@ const drawCard = (
   ctx.fillStyle = 'rgba(180,202,232,0.8)';
   ctx.fillText(`#${p.number}  ${p.roman}`, tx, row(0.315));
 
-  const ranks: readonly (readonly [string, string])[] = [
-    ['ミート', p.meet], ['パワー', p.power], ['弾道', String(p.trajectory)],
+  ctx.font = `800 ${box.h * 0.115}px ${FONT}`;
+  ctx.fillStyle = '#8fe3ff';
+  ctx.fillText(`Lv.${level}`, box.x + box.w - box.h * 0.10 - ctx.measureText(`Lv.${level}`).width,
+    row(0.195));
+
+  /*
+   * Rank AND number, パワプロ style.
+   *
+   * The owner asked for abilities 「パワプロの数値を基準として」, and the letter
+   * on its own cannot carry that: F spans 20 to 39, so two players both showing
+   * F can be nineteen points apart, and a level that raises 22 to 31 would look
+   * like it changed nothing. The letter is the shape of the ability and the
+   * number is the ability.
+   */
+  const stats: readonly (readonly [string, string, string])[] = [
+    ['ミート', rankOf(a.meet), String(a.meet)],
+    ['パワー', rankOf(a.power), String(a.power)],
+    ['弾道', String(a.trajectory), ''],
   ];
   let rx = tx;
-  for (const [label, value] of ranks) {
+  for (const [label, letter, value] of stats) {
     ctx.font = `600 ${box.h * 0.082}px ${FONT}`;
     ctx.fillStyle = 'rgba(160,182,214,0.85)';
-    ctx.fillText(label, rx, row(0.475));
+    ctx.fillText(label, rx, row(0.470));
     const lw = ctx.measureText(label).width;
     ctx.font = `800 ${box.h * 0.130}px ${FONT}`;
-    ctx.fillStyle = RANK_COLOUR[value] ?? '#fff';
-    ctx.fillText(value, rx + lw + box.h * 0.032, row(0.483));
-    rx += lw + ctx.measureText(value).width + box.h * 0.098;
+    ctx.fillStyle = RANK_COLOUR[letter] ?? '#fff';
+    ctx.fillText(letter, rx + lw + box.h * 0.030, row(0.478));
+    let used = lw + box.h * 0.030 + ctx.measureText(letter).width;
+    if (value) {
+      ctx.font = `600 ${box.h * 0.080}px ${FONT}`;
+      ctx.fillStyle = 'rgba(150,172,204,0.85)';
+      ctx.fillText(value, rx + used + box.h * 0.022, row(0.478));
+      used += box.h * 0.022 + ctx.measureText(value).width;
+    }
+    rx += used + box.h * 0.075;
   }
 
-  ctx.font = `800 ${box.h * 0.090}px ${FONT}`;
-  ctx.fillStyle = '#ffd76a';
-  ctx.fillText(`【${SKILL_NAME[p.skill]}】`, tx, row(0.605));
+  // the experience bar toward the next level
+  const bw = textWidth;
+  const by = row(0.560);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(tx, by, bw, box.h * 0.035);
+  ctx.fillStyle = 'rgba(143,227,255,0.9)';
+  ctx.fillRect(tx, by, bw * levelProgress(xp), box.h * 0.035);
 
-  ctx.font = `500 ${box.h * 0.072}px ${FONT}`;
-  ctx.fillStyle = 'rgba(178,196,222,0.85)';
-  wrap(ctx, SKILL_NOTE[p.skill], textWidth, 2)
-    .forEach((line, i) => ctx.fillText(line, tx, row(0.705 + i * 0.088)));
+  const owned = a.specials;
+  if (owned.length === 0) {
+    ctx.font = `500 ${box.h * 0.074}px ${FONT}`;
+    ctx.fillStyle = 'rgba(150,172,204,0.8)';
+    const next = SPECIAL_IDS.find((id) => SPECIAL_LEVEL[id] > level);
+    ctx.fillText(
+      next ? `Lv.${SPECIAL_LEVEL[next]} で ${SPECIAL_NAME[next]}` : '特殊能力なし',
+      tx, row(0.680));
+  } else {
+    let sx = tx;
+    for (const id of owned) {
+      const tier = SPECIAL_TIER[id];
+      ctx.font = `800 ${box.h * 0.082}px ${FONT}`;
+      const label = SPECIAL_NAME[id];
+      const w = ctx.measureText(label).width + box.h * 0.070;
+      if (sx + w > box.x + box.w - box.h * 0.08) break;
+      roundRect(ctx, sx, row(0.615), w, box.h * 0.105, box.h * 0.030);
+      ctx.fillStyle = tier === 'crown'
+        ? 'rgba(198,72,72,0.92)'
+        : tier === 'gold' ? 'rgba(196,150,44,0.92)' : 'rgba(52,96,168,0.92)';
+      ctx.fill();
+      ctx.fillStyle = '#fff8e6';
+      ctx.fillText(label, sx + box.h * 0.035, row(0.693));
+      sx += w + box.h * 0.030;
+    }
+  }
 
   // PROMPT.md 0-5 requires the character note on this screen. It only fits on
   // the highlighted card, which is also the only one it is relevant to.
@@ -227,7 +309,7 @@ const drawCard = (
     ctx.font = `500 ${box.h * 0.068}px ${FONT}`;
     ctx.fillStyle = 'rgba(150,172,204,0.8)';
     wrap(ctx, PLAYER_FLAVOUR[box.player], textWidth, 2)
-      .forEach((line, i) => ctx.fillText(line, tx, row(0.878 + i * 0.080)));
+      .forEach((line, i) => ctx.fillText(line, tx, row(0.855 + i * 0.080)));
   }
   ctx.restore();
 };
@@ -241,8 +323,8 @@ export const drawTitle = (
   mode: RoundMode,
   best: number,
   muted: boolean,
-  points: number,
-  equippedName: string,
+  save: Save,
+  pitcher: PitcherSpec,
 ): void => {
   const g = ctx.createLinearGradient(0, 0, 0, view.height);
   g.addColorStop(0, '#070c18');
@@ -262,13 +344,24 @@ export const drawTitle = (
 
   ctx.font = `600 ${view.width * 0.034}px ${FONT}`;
   ctx.fillStyle = 'rgba(160,182,214,0.85)';
+  // Lifetime records. The save has carried these since M2 and nothing ever
+  // showed them, which makes a hundred rounds of play look like none.
   ctx.fillText(
-    best > 0 ? `自己ベスト ${best}　　選手を選んでください` : '選手を選んでください',
+    save.rounds > 0
+      ? `${save.rounds} ラウンド　HR ${save.homeRuns} 本　最長 ${save.bestDistance} m`
+      : '選手を選んでください',
     cx, insets.top + view.height * 0.198);
+  if (best > 0) {
+    ctx.font = `700 ${view.width * 0.030}px ${FONT}`;
+    ctx.fillStyle = 'rgba(143,227,255,0.9)';
+    ctx.fillText(`自己ベスト ${best.toLocaleString()}`, cx, insets.top + view.height * 0.223);
+  }
   ctx.font = `700 ${view.width * 0.032}px ${FONT}`;
   ctx.fillStyle = 'rgba(255,215,106,0.92)';
-  ctx.fillText(`${points.toLocaleString()} PT　　バット：${equippedName}`,
-    cx, insets.top + view.height * 0.228);
+  ctx.fillText(
+    `Lv.${levelOf(save.players[selected].xp)}　　`
+    + `バット：${BATS[save.players[selected].bat].name}`,
+    cx, insets.top + view.height * 0.248);
 
   // shop button, top-left
   const shopBtn = shopOpenBox(view, insets);
@@ -280,7 +373,7 @@ export const drawTitle = (
   ctx.stroke();
   ctx.font = `700 ${shopBtn.h * 0.40}px ${FONT}`;
   ctx.fillStyle = '#ffd76a';
-  ctx.fillText('バット工房', shopBtn.x + shopBtn.w / 2, shopBtn.y + shopBtn.h * 0.63);
+  ctx.fillText('バット', shopBtn.x + shopBtn.w / 2, shopBtn.y + shopBtn.h * 0.63);
 
   // sound toggle
   const sb = soundBox(view, insets);
@@ -295,7 +388,47 @@ export const drawTitle = (
   ctx.fillText(muted ? '🔇 OFF' : '🔊 ON', sb.x + sb.w / 2, sb.y + sb.h * 0.64);
 
   for (const box of cardBoxes(view, insets)) {
-    drawCard(ctx, box, faces, box.player === selected);
+    drawCard(ctx, box, faces, box.player === selected, save);
+  }
+
+  // ----- opponents
+  const level = levelOf(save.players[selected].xp);
+  ctx.textAlign = 'center';
+  ctx.font = `600 ${view.width * 0.030}px ${FONT}`;
+  ctx.fillStyle = 'rgba(160,182,214,0.85)';
+  const pb0 = pitcherBoxes(view, insets)[0];
+  if (pb0) ctx.fillText('相手ピッチャー', cx, pb0.y - view.width * 0.022);
+
+  for (const box of pitcherBoxes(view, insets)) {
+    const spec = PITCHERS[box.pitcher];
+    const locked = spec.level > level;
+    const chosen = spec.id === pitcher.id;
+    roundRect(ctx, box.x, box.y, box.w, box.h, box.h * 0.18);
+    ctx.fillStyle = chosen ? 'rgba(34,52,84,0.95)' : 'rgba(16,24,40,0.75)';
+    ctx.fill();
+    ctx.strokeStyle = chosen
+      ? 'rgba(255,215,106,0.9)'
+      : locked ? 'rgba(90,104,130,0.30)' : 'rgba(120,146,186,0.35)';
+    ctx.lineWidth = chosen ? 2.5 : 1.4;
+    ctx.stroke();
+
+    const dim = locked ? 0.35 : 1;
+    ctx.font = `800 ${box.h * 0.24}px ${FONT}`;
+    ctx.fillStyle = `rgba(238,246,255,${dim})`;
+    ctx.fillText(spec.name, box.x + box.w / 2, box.y + box.h * 0.34);
+    if (locked) {
+      ctx.font = `700 ${box.h * 0.20}px ${FONT}`;
+      ctx.fillStyle = 'rgba(150,166,192,0.7)';
+      ctx.fillText(`Lv.${spec.level}`, box.x + box.w / 2, box.y + box.h * 0.64);
+    } else {
+      ctx.font = `700 ${box.h * 0.185}px ${FONT}`;
+      ctx.fillStyle = `rgba(143,227,255,${dim})`;
+      ctx.fillText(`EXP x${spec.xp.toFixed(2)}`, box.x + box.w / 2, box.y + box.h * 0.60);
+      ctx.font = `600 ${box.h * 0.165}px ${FONT}`;
+      ctx.fillStyle = `rgba(160,182,214,${dim * 0.9})`;
+      const kmh = Math.round(150 * speedFactor(spec, level));
+      ctx.fillText(`${kmh} km/h`, box.x + box.w / 2, box.y + box.h * 0.85);
+    }
   }
 
   // mode toggle
@@ -420,15 +553,41 @@ export type ShopRow = {
 };
 
 /** Where the shop rows sit. main.ts hit-tests taps against this. */
-export const shopRows = (view: Viewport, insets: Insets): readonly ShopRow[] => {
+/**
+ * The bat shelf, at a FIXED row height, scrolled.
+ *
+ * It used to divide the available height by the number of bats. That was fine
+ * for six and unusable for twenty: the rows collapsed to about fourteen pixels
+ * and the names, the notes and the level requirements were all illegible. A list
+ * that grows has to scroll; it cannot keep shrinking.
+ */
+export const shopListTop = (view: Viewport, insets: Insets): number =>
+  insets.top + view.height * 0.185;
+
+export const shopListBottom = (view: Viewport, insets: Insets): number =>
+  view.height - insets.bottom - view.width * 0.165;
+
+const SHOP_ROW_H = 0.155;
+const SHOP_GAP = 0.018;
+
+export const shopRows = (
+  view: Viewport, insets: Insets, scroll = 0,
+): readonly ShopRow[] => {
   const pad = view.width * 0.045;
-  const top = insets.top + view.height * 0.185;
-  const bottom = view.height - insets.bottom - view.width * 0.155;
-  const gap = view.width * 0.020;
-  const h = (bottom - top - gap * (BAT_IDS.length - 1)) / BAT_IDS.length;
+  const top = shopListTop(view, insets);
+  const h = view.width * SHOP_ROW_H;
+  const gap = view.width * SHOP_GAP;
   return BAT_IDS.map((bat, i) => ({
-    bat, x: pad, y: top + i * (h + gap), w: view.width - pad * 2, h,
+    bat, x: pad, y: top + i * (h + gap) - scroll, w: view.width - pad * 2, h,
   }));
+};
+
+/** How far the shelf can be dragged before it runs out of bats. */
+export const shopScrollMax = (view: Viewport, insets: Insets): number => {
+  const h = view.width * SHOP_ROW_H;
+  const gap = view.width * SHOP_GAP;
+  const content = BAT_IDS.length * h + (BAT_IDS.length - 1) * gap;
+  return Math.max(0, content - (shopListBottom(view, insets) - shopListTop(view, insets)));
 };
 
 /** The back button at the foot of the shop. */
@@ -508,8 +667,8 @@ const drawShopRow = (
   let tx = row.x + pad;
   const ts = row.h * 0.155;
   tx += trait(ctx, tx, row.y + row.h * 0.90, ts, '飛距離', b.exit, '');
-  tx += trait(ctx, tx, row.y + row.h * 0.90, ts, 'ミート', b.meet, '');
-  trait(ctx, tx, row.y + row.h * 0.90, ts, 'PT', b.points, '');
+  tx += trait(ctx, tx, row.y + row.h * 0.90, ts, 'タイミング', b.timing, '');
+  trait(ctx, tx, row.y + row.h * 0.90, ts, '経験値', b.points, '');
 
   // status, right-aligned
   ctx.textAlign = 'right';
@@ -524,11 +683,11 @@ const drawShopRow = (
     ctx.fillText('タップで装備', rx, row.y + row.h * 0.42);
   } else {
     ctx.font = `800 ${row.h * 0.26}px ${FONT}`;
-    ctx.fillStyle = affordable ? '#8fe3ff' : 'rgba(150,166,192,0.8)';
-    ctx.fillText(`${b.price.toLocaleString()} PT`, rx, row.y + row.h * 0.38);
+    ctx.fillStyle = 'rgba(150,166,192,0.85)';
+    ctx.fillText(`Lv.${BAT_UNLOCK_LEVEL[b.id]}`, rx, row.y + row.h * 0.38);
     ctx.font = `600 ${row.h * 0.155}px ${FONT}`;
-    ctx.fillStyle = affordable ? 'rgba(200,230,255,0.9)' : 'rgba(150,166,192,0.6)';
-    ctx.fillText(affordable ? 'タップで購入' : 'ポイント不足', rx, row.y + row.h * 0.60);
+    ctx.fillStyle = 'rgba(150,166,192,0.65)';
+    ctx.fillText('レベルで解放', rx, row.y + row.h * 0.60);
   }
   ctx.restore();
   ctx.textAlign = 'left';
@@ -538,8 +697,10 @@ export const drawShop = (
   ctx: CanvasRenderingContext2D,
   view: Viewport,
   insets: Insets,
-  save: { points: number; bats: readonly BatId[]; equipped: BatId },
+  save: Save,
+  who: PlayerId,
   notice: string,
+  scroll = 0,
 ): void => {
   const g = ctx.createLinearGradient(0, 0, 0, view.height);
   g.addColorStop(0, '#07101c');
@@ -551,14 +712,17 @@ export const drawShop = (
   ctx.textAlign = 'center';
   ctx.font = `800 ${view.width * 0.062}px ${FONT}`;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('バット工房', view.width / 2, insets.top + view.height * 0.070);
+  ctx.fillText('バット', view.width / 2, insets.top + view.height * 0.070);
 
   ctx.font = `600 ${view.width * 0.034}px ${FONT}`;
   ctx.fillStyle = 'rgba(160,182,214,0.9)';
-  ctx.fillText('所持ポイント', view.width / 2, insets.top + view.height * 0.104);
+  ctx.fillText('レベルで解放されます', view.width / 2, insets.top + view.height * 0.104);
   ctx.font = `800 ${view.width * 0.072}px ${FONT}`;
   ctx.fillStyle = '#ffd76a';
-  ctx.fillText(`${save.points.toLocaleString()} PT`, view.width / 2, insets.top + view.height * 0.148);
+  ctx.fillText(
+    `Lv.${levelOf(save.players[who].xp)}　　`
+    + `次まで ${xpToNext(save.players[who].xp).toLocaleString()} EXP`,
+    view.width / 2, insets.top + view.height * 0.148);
 
   if (notice) {
     ctx.font = `700 ${view.width * 0.032}px ${FONT}`;
@@ -566,12 +730,28 @@ export const drawShop = (
     ctx.fillText(notice, view.width / 2, insets.top + view.height * 0.172);
   }
 
-  for (const row of shopRows(view, insets)) {
-    drawShopRow(
-      ctx, row,
-      save.bats.includes(row.bat),
-      save.equipped === row.bat,
-      save.points >= BATS[row.bat].price);
+  // Clip to the list, so a half-scrolled row does not spill over the heading or
+  // the back button.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, shopListTop(view, insets), view.width,
+    shopListBottom(view, insets) - shopListTop(view, insets));
+  ctx.clip();
+  const owned = batsFor(save, who);
+  for (const row of shopRows(view, insets, scroll)) {
+    if (row.y + row.h < shopListTop(view, insets)) continue;
+    if (row.y > shopListBottom(view, insets)) continue;
+    drawShopRow(ctx, row, owned.includes(row.bat), save.players[who].bat === row.bat, false);
+  }
+  ctx.restore();
+
+  // a hint that there is more, while there is more
+  if (scroll < shopScrollMax(view, insets) - 1) {
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${view.width * 0.030}px ${FONT}`;
+    ctx.fillStyle = 'rgba(160,182,214,0.75)';
+    ctx.fillText('▼ 上下にドラッグ', view.width / 2,
+      shopListBottom(view, insets) + view.width * 0.040);
   }
 
   const back = shopBackBox(view, insets);

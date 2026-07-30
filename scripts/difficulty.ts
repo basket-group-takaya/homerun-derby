@@ -26,8 +26,12 @@ import {
   PLATE_HALF_WIDTH, PLAYERS, PLAYER_IDS, T_SWING, ZONE_BOTTOM, ZONE_TOP,
 } from '../src/core/constants.js';
 import type { RoundMode } from '../src/core/round.js';
+import { abilityAt } from '../src/core/ability.js';
 import { resolveContact } from '../src/core/bat.js';
 import { simulateBattedBall } from '../src/core/physics.js';
+
+/** Scripts measure the mid-career batter; level 1 and 99 are different games. */
+const LEVEL = 50;
 
 const TICK = 1 / 60;
 
@@ -78,12 +82,11 @@ const bestUndercut = (player: PlayerId): number => {
   let bestDistance = -1;
   for (let u = 0; u <= 0.075; u += 0.0025) {
     const contact = resolveContact({
-      player: PLAYERS[player],
+      ability: abilityAt(player, LEVEL),
       cursor: { x: 0, y: 0.75 - u },
       ball: { x: 0, y: 0.75 },
       timingError: 0,
-      whiffStreak: 0,
-    });
+      });
     if (contact.kind === 'whiff') break;
     const flight = simulateBattedBall({
       exitVelocity: contact.exitVelocity,

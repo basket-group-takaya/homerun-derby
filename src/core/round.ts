@@ -71,6 +71,8 @@ export type RoundEvent = {
   readonly multiplier: number;
   readonly comboMultiplier: number;
   readonly titanic: boolean;
+  /** True when this was a fork correctly laid off. */
+  readonly discipline: boolean;
 };
 
 export const newRound = (mode: RoundMode, tenacity: boolean): Round => ({
@@ -114,9 +116,23 @@ export const gradeOf = (contact: Contact): Grade => {
 const homeRunPoints = (distance: number): number =>
   SCORE_BASE + Math.max(0, distance - SCORE_DISTANCE_REF) * K_DIST;
 
-/** ARCADE pays for contact that stays in the park; CLASSIC pays nothing. */
+/**
+ * A batted ball that stays in the park still pays for its distance.
+ *
+ * CLASSIC used to pay nothing at all, which was fine while every player started
+ * with A-grade power. It stopped being fine the moment abilities started at G to
+ * E and 弾道1: a level-1 batter's best swing carries about 75 m into a 100 m
+ * fence, so he would finish ten outs with a score of zero, earn no experience,
+ * and never reach level 2. A ladder whose first rung cannot be reached is not a
+ * ladder.
+ *
+ * This is also how the source material does it — パワプロ's ホームランアタック
+ * scores 「飛距離や連打で得点が高まり」, distance itself, not only home runs
+ * (altema, read 令和8年7月30日). CLASSIC pays less than ARCADE because an out is
+ * still an out.
+ */
 const inPlayPoints = (mode: RoundMode, distance: number): number =>
-  mode === 'arcade' ? Math.round(distance * 0.8) : 0;
+  Math.round(distance * (mode === 'arcade' ? 0.8 : 0.45));
 
 /**
  * Fold one swing into the round.
@@ -184,23 +200,37 @@ export const applySwing = (
       multiplier: input.multiplier,
       comboMultiplier: isHomeRun ? combo : 1,
       titanic: isHomeRun && distance >= TITANIC_DISTANCE,
+      discipline: false,
     },
   };
 };
 
-/** A pitch let go by: a strike is an out, a ball is nothing. */
+/**
+ * Points for correctly laying off a fork. 【調整可】
+ *
+ * Small, but not zero, and this is the whole reason the fork is interesting. If
+ * taking one merely avoided a punishment, the pitch would be an interruption:
+ * a second of waiting with nothing to decide. Paying for it makes recognising a
+ * fork a way to score, so the pitch you cannot hit becomes a pitch you want.
+ */
+export const DISCIPLINE_BONUS = 120;
+
+/** A pitch let go by: a strike is an out, a ball is nothing, a fork pays. */
 export const applyTake = (
-  round: Round, strike: boolean,
+  round: Round, strike: boolean, fork = false,
 ): { readonly round: Round; readonly event: RoundEvent } => {
   const outs = round.outs + (strike ? 1 : 0);
+  const gained = !strike && fork ? DISCIPLINE_BONUS : 0;
   return {
     round: strike
       ? { ...round, outs, streak: 0, over: outs >= OUTS_PER_ROUND }
-      : round,
+      : gained > 0
+        ? { ...round, score: round.score + gained }
+        : round,
     event: {
       outcome: 'take',
-      grade: 'miss',
-      gained: 0,
+      grade: gained > 0 ? 'good' : 'miss',
+      gained,
       out: strike,
       savedByTenacity: false,
       distance: 0,
@@ -208,6 +238,7 @@ export const applyTake = (
       multiplier: 1,
       comboMultiplier: 1,
       titanic: false,
+      discipline: gained > 0,
     },
   };
 };

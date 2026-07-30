@@ -8,13 +8,14 @@
  * cause-and-effect legible to a player.
  */
 
-import type { PlayerSpec } from './constants.js';
+import type { Ability } from './ability.js';
+import { lateShapeFor, liftedLaunchAngle, specialExit, specialPower } from './ability.js';
 import type { BatSpec } from './bats.js';
 import { BATS, DEFAULT_BAT, effectiveMaxExit } from './bats.js';
+import { BASE_LAUNCH_ANGLE, catchRadiusFor } from './ranks.js';
 import {
-  AIM_HIGH_FACTOR, BALL_RADIUS, CURSOR_RADIUS, BASE_LAUNCH_ANGLE, EXIT_VELOCITY_MAX,
+  BALL_RADIUS, EXIT_VELOCITY_MAX,
   FOUL_ANGLE, HEIGHT_REF, K_HEIGHT, K_PHI, K_THETA,
-  PASSION_CURSOR_BONUS, PASSION_EXIT_BONUS, PASSION_WHIFF_STREAK,
   Q_FOUL, Q_GOOD, Q_MEET_EXP, Q_TIME_EXP, R_JUST_RATIO,
   THETA_MAX, THETA_MIN, T_JUST, T_MISS, V_MIN,
 } from './constants.js';
@@ -29,17 +30,34 @@ export type ContactKind =
 export type ZonePoint = { readonly x: number; readonly y: number };
 
 export type ContactInput = {
-  readonly player: PlayerSpec;
+  /**
+   * The batter's numbers, not his identity.
+   *
+   * It used to be a PlayerSpec carrying fixed letter ranks. Abilities now grow
+   * with level (src/core/ability.ts), so a rank is a way of DISPLAYING a number
+   * rather than the number itself, and contact has to be resolved against the
+   * value the player currently has rather than against who he is.
+   */
+  readonly ability: Ability;
   /** Where the meet cursor was when the swing landed. */
   readonly cursor: ZonePoint;
   /** Where the ball crossed the zone plane. */
   readonly ball: ZonePoint;
   /** Swing timing error [s]. Negative is early. */
   readonly timingError: number;
-  /** Consecutive whiffs so far this round, for yuki's skill. */
-  readonly whiffStreak: number;
+  /** Consecutive whiffs so far this round. Kept for the HUD, unused in the maths. */
+  readonly whiffStreak?: number;
   /** Equipped bat. Optional so existing call sites keep working. */
   readonly bat?: BatSpec;
+  /**
+   * Set when the pitch cannot be hit at all, whatever the swing.
+   *
+   * The fork. It is out of the zone by construction and the owner asked that
+   * swinging at one always miss, so the decision is "lay off", not "aim better".
+   * Putting it here rather than in game.ts keeps the rule testable in core and
+   * keeps the returned Contact well formed, with the real timing error in it.
+   */
+  readonly unhittable?: boolean;
 };
 
 export type Contact = {
@@ -66,15 +84,8 @@ export type Contact = {
  * yuki's "passion" widens the cursor for one swing after consecutive whiffs, so
  * a cold streak has a way out.
  */
-export const catchRadius = (
-  player: PlayerSpec, whiffStreak: number, bat: BatSpec = BATS[DEFAULT_BAT],
-): number => {
-  const base = CURSOR_RADIUS[player.meet] * bat.meet;
-  const boosted = player.skill === 'passion' && whiffStreak >= PASSION_WHIFF_STREAK
-    ? base * PASSION_CURSOR_BONUS
-    : base;
-  return boosted + BALL_RADIUS;
-};
+export const catchRadius = (ability: Ability): number =>
+  catchRadiusFor(ability.meet) + BALL_RADIUS;
 
 const classify = (e: number, t: number, q: number, radius: number, phi: number): ContactKind => {
   if (e <= radius * R_JUST_RATIO && Math.abs(t) <= T_JUST) return 'just';
@@ -97,13 +108,13 @@ const classify = (e: number, t: number, q: number, radius: number, phi: number):
  * docs/SPEC.md 4-5 hold structurally rather than by luck.
  */
 export const resolveContact = (input: ContactInput): Contact => {
-  const { player, cursor, ball, timingError: t, whiffStreak } = input;
+  const { ability, cursor, ball, timingError: t } = input;
   const bat = input.bat ?? BATS[DEFAULT_BAT];
 
   const dx = ball.x - cursor.x;
   const u = ball.y - cursor.y;
   const e = Math.hypot(dx, u);
-  const radius = catchRadius(player, whiffStreak, bat);
+  const radius = catchRadius(ability);
 
   const miss = (): Contact => ({
     kind: 'whiff', e, t, u, quality: 0,
@@ -111,7 +122,11 @@ export const resolveContact = (input: ContactInput): Contact => {
     spin: { backspinRpm: 0, sidespinRpm: 0 },
     contactHeight: ball.y,
   });
-  if (e > radius || Math.abs(t) > T_MISS) return miss();
+  if (input.unhittable) return miss();
+  // The bat widens the timing window; that is what it buys now that there is no
+  // cursor for it to widen instead.
+  const window = T_MISS * bat.timing;
+  if (e > radius || Math.abs(t) > window) return miss();
 
   // Quadratic falloff, not linear. Linear made the sweet spot a cliff: 33 ms of
   // timing error (2 frames at 60fps) cost a right-handed A-power hitter 30 m of
@@ -119,7 +134,9 @@ export const resolveContact = (input: ContactInput): Contact => {
   // normalised error keeps the centre forgiving and still collapses at the edge.
   // Both terms remain monotonically decreasing, so PROMPT.md 3-4 still holds.
   const meetError = clamp(e / radius, 0, 1);
-  const timeError = clamp(Math.abs(t) / T_MISS, 0, 1);
+  // 広角打法 reshapes the LATE half of the curve; see WIDE_ANGLE_LATE_SHAPE.
+  const rawTime = clamp(Math.abs(t) / window, 0, 1);
+  const timeError = t > 0 ? Math.pow(rawTime, lateShapeFor(ability.specials)) : rawTime;
   const qMeet = 1 - meetError * meetError;
   const qTime = 1 - timeError * timeError;
   const quality = Math.pow(qMeet, Q_MEET_EXP) * Math.pow(qTime, Q_TIME_EXP);
@@ -127,22 +144,34 @@ export const resolveContact = (input: ContactInput): Contact => {
   // The bat scales the CEILING, not the instantaneous value. See the long
   // comment on effectiveMaxExit: scaling the value clamps at the physical limit
   // and destroys the monotonicity PROMPT.md 3-4 requires.
-  const maxExit = effectiveMaxExit(player.power, bat, player.skill === 'passion');
-  let exitVelocity = V_MIN + (maxExit - V_MIN) * quality;
+  const lift = specialExit(ability.specials);
+  // The power line adds to the VALUE, not to the result: +5, +10 or +15, whichever
+  // one is active. Feeding it through effectiveMaxExit rather than multiplying the
+  // exit velocity afterwards is what keeps it under the record without clamping.
+  const power = ability.power + specialPower(ability.specials);
+  const maxExit = effectiveMaxExit(power, bat, lift);
+  let exitVelocity = (V_MIN + (maxExit - V_MIN) * quality) * lift;
 
-  // launch angle: base from the trajectory rank, plus undercut, plus a small
-  // correction for a high or low pitch
-  const skillFactor = player.skill === 'aimHigh' ? AIM_HIGH_FACTOR : 1;
+  /*
+   * Launch angle: 弾道, plus what the special abilities add, plus the undercut,
+   * plus a small correction for a high or low pitch.
+   *
+   * specialLift is where パワーヒッター and アーチスト live. In the source
+   * material they read 「強振して打つとホームラン性の打球が出やすくなる」 and
+   * 「かなり出やすくなる」; there is no 強振/ミート打ち split here to hang that
+   * off, so they become degrees of launch angle, which is the same claim
+   * expressed in the only vocabulary this game has.
+   */
   const launchAngle = clamp(
-    BASE_LAUNCH_ANGLE[player.trajectory] + K_THETA * skillFactor * u
-      + K_HEIGHT * (ball.y - HEIGHT_REF),
+    liftedLaunchAngle(
+      BASE_LAUNCH_ANGLE[ability.trajectory], ability.specials, exitVelocity * 3.6)
+      + K_THETA * u + K_HEIGHT * (ball.y - HEIGHT_REF),
     THETA_MIN, THETA_MAX);
 
   // spray: early pulls toward left field (negative), late goes the other way
   const sprayAngle = K_PHI * t;
 
   const kind = classify(e, t, quality, radius, sprayAngle);
-  if (player.skill === 'passion' && kind === 'just') exitVelocity *= PASSION_EXIT_BONUS;
   exitVelocity = Math.min(exitVelocity, EXIT_VELOCITY_MAX);
 
   return {

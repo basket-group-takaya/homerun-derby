@@ -12,11 +12,15 @@ import type { Rng } from './rng.js';
 import { seedRng } from './rng.js';
 import type { PlayerId } from './constants.js';
 import {
-  PLAYERS, PLATE_HALF_WIDTH, T_SWING, ZONE_BOTTOM, ZONE_TOP,
+  PLATE_HALF_WIDTH, T_SWING, ZONE_BOTTOM, ZONE_TOP,
   TITANIC_DISTANCE,
 } from './constants.js';
 import type { Pitch, PitchFlight } from './pitch.js';
-import { choosePitch, flyPitch } from './pitch.js';
+import { choosePitch, flyPitch, FORK_IS_A_BALL } from './pitch.js';
+import type { PitcherId } from './pitchers.js';
+import { DEFAULT_PITCHER, PITCHERS, speedFactor } from './pitchers.js';
+import type { Ability } from './ability.js';
+import { abilityAt } from './ability.js';
 import type { Contact } from './bat.js';
 import { resolveContact, catchRadius } from './bat.js';
 import { simulateBattedBall } from './physics.js';
@@ -61,14 +65,28 @@ export type GameState = {
   readonly lastEvent: RoundEvent | null;
   /** Equipped bat. Chosen before the round and fixed for its duration. */
   readonly bat: BatId;
+  /** The batter's level. Drives his abilities and the opponent's speed. */
+  readonly level: number;
+  readonly pitcher: PitcherId;
+  /** Derived from player + level; kept on the state so step() stays pure. */
+  readonly ability: Ability;
+  /** The course the last swing was aimed at, for the zone flash. */
 };
 
 export type Command =
   | { readonly kind: 'tick'; readonly dt: number }
   | { readonly kind: 'moveCursor'; readonly x: number; readonly y: number }
   | { readonly kind: 'swing' }
+
   | { readonly kind: 'pitch' }
-  | { readonly kind: 'selectPlayer'; readonly player: PlayerId }
+  | {
+    readonly kind: 'selectPlayer';
+    readonly player: PlayerId;
+    readonly level?: number;
+    readonly bat?: BatId;
+    readonly pitcher?: PitcherId;
+  }
+  | { readonly kind: 'selectPitcher'; readonly pitcher: PitcherId }
   | { readonly kind: 'newRound'; readonly mode?: RoundMode }
   | { readonly kind: 'equipBat'; readonly bat: BatId };
 
@@ -80,6 +98,9 @@ const CURSOR_Y_HI = ZONE_TOP + 0.18;
 export const initialState = (
   seed: number, player: PlayerId = 'takaya', mode: RoundMode = 'classic',
   bat: BatId = DEFAULT_BAT,
+  /** The batter's level. Abilities and the opponent's speed both follow it. */
+  level = 1,
+  pitcher: PitcherId = DEFAULT_PITCHER,
 ): GameState => ({
   rng: seedRng(seed),
   phase: 'ready',
@@ -93,9 +114,12 @@ export const initialState = (
   ballPos: null,
   flightTime: null,
   pitchCount: 0,
-  round: newRound(mode, PLAYERS[player].skill === 'tenacity'),
+  round: newRound(mode, false),
   lastEvent: null,
   bat,
+  level,
+  pitcher,
+  ability: abilityAt(player, level),
 });
 
 /** Where the pitch is at time t, interpolated from the integrated samples. */
@@ -121,7 +145,8 @@ export const ballAt = (flight: PitchFlight, t: number): Vec3 => {
 };
 
 const startPitch = (state: GameState): GameState => {
-  const chosen = choosePitch(state.rng);
+  const chosen = choosePitch(
+    state.rng, speedFactor(PITCHERS[state.pitcher], state.level));
   const flight = flyPitch(chosen.pitch);
   return {
     ...state,
@@ -137,18 +162,34 @@ const startPitch = (state: GameState): GameState => {
   };
 };
 
-/** Resolve a swing against the pitch that is currently in the air. */
+/**
+ * Resolve a swing against the pitch that is currently in the air.
+ *
+ * The bat now meets the ball wherever the ball is, so the meet error is always
+ * zero and TIMING IS THE WHOLE GAME. That is a deliberate consequence of the
+ * owner replacing the four-course tap with a single button on 令和8年7月30日:
+ * with one input there is nothing to aim with, and a fixed aim point would have
+ * made corner pitches unhittable no matter how well timed. What supplies the
+ * difficulty instead is the speed spread — 110 to 150 km/h is 147 ms of
+ * difference in when the ball arrives.
+ *
+ * The exception is the fork, which cannot be hit at all. See pitch.ts.
+ */
 const doSwing = (state: GameState): GameState => {
   if (state.phase !== 'pitching' || !state.flight) return state;
 
+  const cursor = state.flight.crossPoint;
+  const unhittable = state.pitch?.type === 'fork' && FORK_IS_A_BALL;
+
   const contact = resolveContact({
-    player: PLAYERS[state.player],
-    cursor: state.cursor,
+    ability: state.ability,
+    cursor,
     ball: state.flight.crossPoint,
     // the bat arrives T_SWING after the input, so the error is measured there
     timingError: state.time + T_SWING - state.flight.crossTime,
     whiffStreak: state.whiffStreak,
     bat: BATS[state.bat],
+    unhittable,
   });
   const multiplier = state.pitch?.multiplier ?? 1;
 
@@ -161,6 +202,7 @@ const doSwing = (state: GameState): GameState => {
       whiffStreak: state.whiffStreak + 1,
       round: applied.round,
       lastEvent: applied.event,
+      cursor,
     };
   }
 
@@ -191,6 +233,7 @@ const doSwing = (state: GameState): GameState => {
     whiffStreak: 0,
     round: applied.round,
     lastEvent: applied.event,
+    cursor,
   };
 };
 
@@ -227,6 +270,11 @@ export const step = (state: GameState, cmd: Command): GameState => {
         state.rng.s0 + state.pitchCount + 1, state.player,
         cmd.mode ?? state.round.mode, state.bat);
 
+    case 'selectPitcher':
+      return state.phase === 'pitching' || state.phase === 'flight'
+        ? state
+        : { ...state, pitcher: cmd.pitcher };
+
     case 'equipBat':
       // only between rounds: swapping mid-round would change the physics of a
       // round already in progress and make its score meaningless
@@ -235,9 +283,13 @@ export const step = (state: GameState, cmd: Command): GameState => {
         : { ...state, bat: cmd.bat };
 
     case 'selectPlayer':
+      // The level comes with the player because each of the three keeps his own
+      // experience — choosing 敦司 opens 敦司's save, it does not reskin 貴也's.
       return state.phase === 'pitching' || state.phase === 'flight'
         ? state
-        : initialState(state.rng.s0, cmd.player, state.round.mode, state.bat);
+        : initialState(
+          state.rng.s0, cmd.player, state.round.mode, cmd.bat ?? state.bat,
+          cmd.level ?? state.level, cmd.pitcher ?? state.pitcher);
 
     case 'moveCursor':
       return {
@@ -254,6 +306,8 @@ export const step = (state: GameState, cmd: Command): GameState => {
     case 'swing':
       return doSwing(state);
 
+
+
     case 'tick': {
       if (state.phase === 'pitching') {
         const time = state.time + cmd.dt;
@@ -261,7 +315,8 @@ export const step = (state: GameState, cmd: Command): GameState => {
         if (!flight) return state;
         // the ball is past the batter and untouched: a taken pitch
         if (time > flight.crossTime + 0.35) {
-          const applied = applyTake(state.round, crossedTheZone(flight));
+          const applied = applyTake(
+            state.round, crossedTheZone(flight), state.pitch?.type === 'fork');
           return {
             ...state,
             phase: applied.round.over ? 'roundOver' : 'result',
@@ -296,4 +351,4 @@ export const step = (state: GameState, cmd: Command): GameState => {
 
 /** Convenience for the renderer: the catch radius in play right now. */
 export const currentCatchRadius = (state: GameState): number =>
-  catchRadius(PLAYERS[state.player], state.whiffStreak, BATS[state.bat]);
+  catchRadius(state.ability);

@@ -7,6 +7,7 @@
 
 import { simulateBattedBall, spinForContact, dragCoefficient, liftCoefficient }
   from '../src/core/physics.js';
+import { abilityAt } from '../src/core/ability.js';
 import { resolveContact, catchRadius } from '../src/core/bat.js';
 import { judgeBattedBall, fenceDistance } from '../src/core/stadium.js';
 import {
@@ -14,6 +15,9 @@ import {
   REFERENCE_AIR_DENSITY, AIR_DENSITY, EXIT_VELOCITY_MAX,
   FENCE_CENTRE, FENCE_ALLEY, FENCE_LINE, FENCE_HEIGHT, DEFAULT_CONTACT_HEIGHT,
 } from '../src/core/constants.js';
+
+/** Scripts measure the mid-career batter; level 1 and 99 are different games. */
+const LEVEL = 50;
 
 const line = (s = ''): void => { process.stdout.write(s + '\n'); };
 const f = (n: number, w: number, d = 1): string => n.toFixed(d).padStart(w);
@@ -116,11 +120,10 @@ line('     選手      ミート パワー 弾道  カーソル半径  初速km/
 for (const id of PLAYER_IDS) {
   const p = PLAYERS[id];
   const c = resolveContact({
-    player: p,
+    ability: abilityAt(id, LEVEL),
     cursor: { x: 0, y: DEFAULT_CONTACT_HEIGHT },
     ball: { x: 0, y: DEFAULT_CONTACT_HEIGHT },
     timingError: 0,
-    whiffStreak: 0,
   });
   const r = simulateBattedBall({
     exitVelocity: c.exitVelocity, launchAngle: c.launchAngle, sprayAngle: c.sprayAngle,
@@ -129,7 +132,7 @@ for (const id of PLAYER_IDS) {
   });
   const j = judgeBattedBall(r.trail, r.landing, r.distance);
   line(`     ${p.roman.padEnd(9)} ${p.meet}      ${p.power}     ${p.trajectory}`
-    + `     ${f(catchRadius(p, 0), 7, 3)} m  ${f(c.exitVelocity * 3.6, 8)}`
+    + `     ${f(catchRadius(abilityAt(id, LEVEL)), 7, 3)} m  ${f(c.exitVelocity * 3.6, 8)}`
     + `  ${f(c.launchAngle, 5)}  ${f(r.distance, 6)} m  ${j.outcome}`);
 }
 
@@ -139,11 +142,10 @@ line('■ 9. 敦司のスキル「上を狙う」— 弾道2の低さを技術�
 line('     アンダーカット   初速km/h   角度   飛距離   フェンス120m');
 for (const u of [0, 0.005, 0.010, 0.013, 0.020, 0.030]) {
   const c = resolveContact({
-    player: PLAYERS.atsushi,
+    ability: abilityAt('atsushi', LEVEL),
     cursor: { x: 0, y: DEFAULT_CONTACT_HEIGHT - u },
     ball: { x: 0, y: DEFAULT_CONTACT_HEIGHT },
     timingError: 0,
-    whiffStreak: 0,
   });
   const r = simulateBattedBall({
     exitVelocity: c.exitVelocity, launchAngle: c.launchAngle, sprayAngle: c.sprayAngle,
